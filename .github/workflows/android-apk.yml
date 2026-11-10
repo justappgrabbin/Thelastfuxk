@@ -1,0 +1,37 @@
+name: Android APK build
+on:
+  push:
+    branches: [fix/agent-autonomy-hands]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require complete source import
+        run: |
+          test -f build.sh || { echo "::error::Full v0.1.3 source has not been imported"; exit 1; }
+          test -f AndroidManifest.xml
+          test -f assets/alpine-coder.tar.gz
+          test -f native/arm64-v8a/libllama_server.so
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Compile and test
+        run: |
+          export ANDROID_PLATFORM_JAR="$ANDROID_HOME/platforms/android-35/android.jar"
+          export ANDROID_BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          bash build.sh "$RUNNER_TEMP/The-Last-Fuck-debug.apk"
+      - name: Upload APK for testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: The-Last-Fuck-debug-apk
+          path: ${{ runner.temp }}/The-Last-Fuck-debug.apk
+          if-no-files-found: error
+          retention-days: 14
