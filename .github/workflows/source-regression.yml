@@ -1,0 +1,31 @@
+name: Source regression checks
+on:
+  push:
+    branches: [fix/agent-autonomy-hands]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify complete preserved source
+        run: |
+          set -euo pipefail
+          for f in AndroidManifest.xml build.sh tests/run.sh assets/alpine-coder.tar.gz native/arm64-v8a/libllama_server.so; do
+            test -s "$f" || { echo "::error::Missing original source or binary asset: $f"; exit 1; }
+          done
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Fetch org.json test dependency
+        run: |
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/json.jar" \
+            https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar
+          test -s "$RUNNER_TEMP/json.jar"
+      - name: Run existing Java regression suite
+        env:
+          JSON_JAR: ${{ runner.temp }}/json.jar
+        run: bash tests/run.sh
