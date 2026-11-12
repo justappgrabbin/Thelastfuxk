@@ -1,0 +1,78 @@
+name: Import complete Last Fuck visual builder source
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  import-source:
+    if: ${{ github.event.release.draft == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out APK build branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/agent-autonomy-hands
+          persist-credentials: true
+      - name: Download the preserved source archive from this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release download "$RELEASE_TAG" --pattern 'The-Last-Fuck-Visual-App-Builder-source.zip' --dir "$RUNNER_TEMP"
+          test -s "$RUNNER_TEMP/The-Last-Fuck-Visual-App-Builder-source.zip"
+      - name: Verify full archive and import without stripping files
+        env:
+          SOURCE_ZIP: ${{ runner.temp }}/The-Last-Fuck-Visual-App-Builder-source.zip
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, zipfile, shutil, stat
+          src = pathlib.Path(os.environ['SOURCE_ZIP'])
+          allowed = {'assets','native','res','src','tests'}
+          top = {'AndroidManifest.xml','README.md','build.sh','YORK-Termux.sh',
+                 'BUILDER-STATUS.md','WORKBENCH-STATUS.md','REPAIR-VERIFICATION.txt',
+                 'import-lastfuck-to-github.sh'}
+          with zipfile.ZipFile(src) as z:
+              bad = z.testzip()
+              if bad: raise SystemExit('Archive corruption: '+bad)
+              files = {}
+              for member in z.infolist():
+                  p = pathlib.PurePosixPath(member.filename)
+                  if member.is_dir(): continue
+                  if len(p.parts)<2 or p.parts[0]!='The-Last-Fuck' or '..' in p.parts:
+                      raise SystemExit('Unsafe archive path '+member.filename)
+                  rel = pathlib.Path(*p.parts[1:])
+                  if len(rel.parts)<1 or (rel.parts[0] not in allowed and str(rel) not in top):
+                      raise SystemExit('Unexpected archive file '+member.filename)
+                  if stat.S_ISLNK(member.external_attr >> 16):
+                      raise SystemExit('Symlink not permitted '+member.filename)
+                  files[str(rel)] = member
+              required = ['AndroidManifest.xml','build.sh','tests/run.sh',
+                          'assets/alpine-coder.tar.gz','native/arm64-v8a/libllama_server.so',
+                          'src/app/lastfuck/AgentService.java',
+                          'assets/computer.html']
+              for f in required:
+                  if f not in files or files[f].file_size <= 0:
+                      raise SystemExit('Missing preserved component '+f)
+              for name, member in files.items():
+                  target=pathlib.Path(name)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  with z.open(member) as i, target.open('wb') as o:
+                      shutil.copyfileobj(i,o)
+              print('Imported',len(files),'preserved files')
+          PY
+          chmod +x build.sh tests/run.sh || true
+      - name: Commit the complete source to build branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- AndroidManifest.xml README.md build.sh assets native res src tests YORK-Termux.sh BUILDER-STATUS.md WORKBENCH-STATUS.md REPAIR-VERIFICATION.txt import-lastfuck-to-github.sh
+          if git diff --cached --quiet; then
+            echo 'Source already matches this release.'
+          else
+            git commit -m "Import preserved visual app builder and Android runtime"
+            git push origin HEAD:fix/agent-autonomy-hands
+          fi
+      - name: Next step
+        run: echo "The push to fix/agent-autonomy-hands triggers APK and regression workflows. Check Actions for build success and the debug APK artifact."
