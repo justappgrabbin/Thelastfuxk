@@ -245,6 +245,17 @@ public final class MainActivity extends Activity {
                 return new org.json.JSONObject().put("ok",true).put("files",count[0]).toString();
             } catch(Exception e) { return error(e); }
         }
+        @android.webkit.JavascriptInterface public void runZip(String path) {
+            new Thread(()->{
+                try {
+                    java.io.File archive=new WorkspaceBrowser(new java.io.File(getFilesDir(),"workspace")).resolve(path);
+                    ZipRunner.Project project=ZipRunner.unpack(archive,new java.io.File(getFilesDir(),"workspace/projects"));
+                    runOnUiThread(()->new AlertDialog.Builder(MainActivity.this).setTitle("ZIP runner · choose entry")
+                        .setItems(project.entries.toArray(new String[0]),(d,n)->showLivePreview(project.root,project.entries.get(n)))
+                        .setNegativeButton("Close",null).show());
+                } catch(Exception e) { runOnUiThread(()->Toast.makeText(MainActivity.this,"ZIP runner: "+e.getMessage(),Toast.LENGTH_LONG).show()); }
+            },"zip-import").start();
+        }
         @android.webkit.JavascriptInterface public void live(String path) { runOnUiThread(()->showLivePreview(path)); }
         @android.webkit.JavascriptInterface public void review(boolean allow) { ActionReview.decide(allow); }
         @android.webkit.JavascriptInterface public void control(String action) {
@@ -275,8 +286,10 @@ public final class MainActivity extends Activity {
      * own scripts run but can't reach the app. Relative files (css/js/images) load from the workspace; the internet is blocked.
      */
     private void showLivePreview(String path) {
+        showLivePreview(new java.io.File(getFilesDir(),"workspace"),path);
+    }
+    private void showLivePreview(final java.io.File root, String path) {
         try {
-            final java.io.File root=new java.io.File(getFilesDir(),"workspace");
             final WorkspaceBrowser browser=new WorkspaceBrowser(root);
             java.io.File file=browser.resolve(path);
             if(!file.isFile()) throw new java.io.IOException("File not found: "+path);
@@ -311,6 +324,7 @@ public final class MainActivity extends Activity {
                         String ext=name.contains(".")?name.substring(name.lastIndexOf('.')+1):"";
                         String mime=android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
                         if(ext.equals("js")||ext.equals("mjs")) mime="text/javascript";
+                        if(ext.equals("wasm")) mime="application/wasm";
                         if(mime==null) mime="application/octet-stream";
                         return new android.webkit.WebResourceResponse(mime,"UTF-8",new java.io.FileInputStream(f));
                     } catch(Exception e) {
@@ -322,7 +336,7 @@ public final class MainActivity extends Activity {
             dialog.setContentView(box);
             dialog.setOnDismissListener(d->view.destroy());
             dialog.show();
-            view.loadUrl("https://preview.local/"+(folder.isEmpty()?"":folder+"/")+file.getName());
+            view.loadUrl(new android.net.Uri.Builder().scheme("https").authority("preview.local").path("/"+(folder.isEmpty()?"":folder+"/")+file.getName()).build().toString());
         } catch(Exception e) {
             android.widget.Toast.makeText(this,"Preview: "+e.getMessage(),android.widget.Toast.LENGTH_LONG).show();
         }
