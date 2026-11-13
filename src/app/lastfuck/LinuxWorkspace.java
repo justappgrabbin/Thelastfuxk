@@ -73,6 +73,16 @@ final class LinuxWorkspace implements AutoCloseable {
         return execute(shellProcess(command, manual), 90);
     }
 
+    /** Same as shell(), with a caller-chosen time limit (for long jobs such as a first-time git clone). */
+    Result shell(String command, int seconds) throws Exception {
+        return execute(shellProcess(command, false), seconds);
+    }
+
+    /** Starts a long-running Alpine process (e.g. the Klein server) whose output goes to a log file. Caller owns it. */
+    Process background(String command, File log) throws Exception {
+        return shellProcess(command, false).redirectErrorStream(true).redirectOutput(log).start();
+    }
+
     private ProcessBuilder shellProcess(String command, boolean manual) throws Exception {
         prepare();
         String nativeDir = context.getApplicationInfo().nativeLibraryDir;

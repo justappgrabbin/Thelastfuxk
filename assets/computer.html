@@ -70,7 +70,10 @@ input:focus,textarea:focus,select:focus{outline:2px solid var(--accent);outline-
 <aside class="drawer" id="drawer" aria-label="Settings"><div class="toolbar"><h2>Settings</h2><button class="small" onclick="closeSettings()">✕</button></div>
 <section><h3>Klein · the chatter</h3>
 <label class="switch">Klein answers chat<input type="checkbox" id="setKleinOn"></label>
-<label>Klein server (your klein-agent web_app.py)<input id="setKleinUrl" placeholder="http://127.0.0.1:7860"></label>
+<label class="switch">Run Klein on this phone<input type="checkbox" id="setKleinLocal"></label>
+<p class="kv" id="kleinRuntime"></p>
+<div class="row"><button class="small" onclick="native('klein')">Start / restart Klein here</button></div>
+<label>Klein server address (this phone = http://127.0.0.1:7860)<input id="setKleinUrl" placeholder="http://127.0.0.1:7860"></label>
 <label>Access token (optional, for a tunnel/proxy)<input id="setKleinToken" type="password" placeholder="leave blank to keep"></label>
 <div class="row"><button class="small primary" onclick="saveSettings()">Save</button><button class="small" onclick="testKlein()">Test connection</button></div>
 <p class="kv" id="kleinState"></p></section>
@@ -123,8 +126,8 @@ function openLatestInFiles(){tab('files');previewFile(lastPreviewPath)}
 function openSettings(){el('drawer').classList.add('open');el('scrim').classList.add('open');loadSettings()}
 function closeSettings(){el('drawer').classList.remove('open');el('scrim').classList.remove('open')}
 let mcpInfo=null;function showMcp(m){mcpInfo=m;el('setRemote').checked=!!m.remote;el('mcpState').textContent=`Accessibility: ${m.accessibility?'on':'OFF'}\nServer: ${m.running?('running'+(m.boundRemote?' · REMOTE':' · this phone only')):'stopped'}\nWorkspace folder: ${m.workspace?'connected':'none'}\n${m.urls.join('\n')}`}
-function loadSettings(){try{const v=parsed(bridge().settings());el('setKleinOn').checked=v.kleinOn;el('setKleinUrl').value=v.kleinUrl;el('setKleinToken').placeholder=v.kleinToken?'saved · type to replace':'leave blank if none';el('setProactive').checked=v.proactive;showMcp(v.mcp);const s=parsed(bridge().state());el('kleinState').textContent=s.klein||'';el('weightsState').textContent=s.weights+' · '+s.weightsPercent+'%'}catch(e){toast(e.message)}}
-function saveSettings(){try{const v={kleinOn:el('setKleinOn').checked,kleinUrl:el('setKleinUrl').value,proactive:el('setProactive').checked};if(el('setKleinToken').value)v.kleinToken=el('setKleinToken').value;parsed(bridge().saveSettings(JSON.stringify(v)));el('setKleinToken').value='';toast('Settings saved');loadSettings()}catch(e){toast(e.message)}}
+function loadSettings(){try{const v=parsed(bridge().settings());el('setKleinOn').checked=v.kleinOn;el('setKleinLocal').checked=v.kleinLocal;el('kleinRuntime').textContent=v.kleinRuntime||'';el('setKleinUrl').value=v.kleinUrl;el('setKleinToken').placeholder=v.kleinToken?'saved · type to replace':'leave blank if none';el('setProactive').checked=v.proactive;showMcp(v.mcp);const s=parsed(bridge().state());el('kleinState').textContent=s.klein||'';el('weightsState').textContent=s.weights+' · '+s.weightsPercent+'%'}catch(e){toast(e.message)}}
+function saveSettings(){try{const v={kleinOn:el('setKleinOn').checked,kleinLocal:el('setKleinLocal').checked,kleinUrl:el('setKleinUrl').value,proactive:el('setProactive').checked};if(el('setKleinToken').value)v.kleinToken=el('setKleinToken').value;parsed(bridge().saveSettings(JSON.stringify(v)));el('setKleinToken').value='';toast('Settings saved');loadSettings()}catch(e){toast(e.message)}}
 function testKlein(){el('kleinState').textContent='Testing…';setTimeout(()=>{try{const r=parsed(bridge().testKlein());el('kleinState').textContent='Connected · Klein said: '+r.reply}catch(e){el('kleinState').textContent='Not reachable · '+e.message}},30)}
 function mcp(action){try{showMcp(parsed(bridge().mcp(action)));if(action==='folder'||action==='accessibility')setTimeout(loadSettings,1500)}catch(e){toast(e.message);loadSettings()}}
 function copyMcp(){if(!mcpInfo)return;const url=mcpInfo.urls[mcpInfo.urls.length-1];const text=JSON.stringify({url,headers:{Authorization:'Bearer '+mcpInfo.token}},null,2);navigator.clipboard?.writeText(text).then(()=>toast('Connection copied (contains your token)'),()=>{el('mcpState').textContent+='\n\n'+text})}

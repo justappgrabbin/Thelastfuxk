@@ -27,6 +27,8 @@ public final class AgentService extends Service {
     static volatile String lastOutput = "";
     static volatile String kleinStatus = "Klein not contacted yet";
     private Thread weightsWorker;
+    private Thread kleinWorker;
+    private KleinRuntime klein;
     private Thread computerWorker;
     private ConversationLog conversations;
     private LocalCoder coder;
@@ -50,7 +52,7 @@ public final class AgentService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (worker != null) { startComputer(); startWeightsDownload(); return START_STICKY; }
+        if (worker != null) { startComputer(); startWeightsDownload(); startKlein(); return START_STICKY; }
         running = true;
         status = "Starting";
         startForeground(1, notification(ACTIVE, "The Last Fuck", status, true));
@@ -79,11 +81,16 @@ public final class AgentService extends Service {
             HandsTools hands = new HandsTools(this, linux);
             startComputer();
             startWeightsDownload();
+            startKlein();
             show("Watcher active · waiting for work");
             while (!stopping && !Thread.currentThread().isInterrupted()) {
                 if (computerStatus.startsWith("Linux computer running") && !linux.isResidentAlive()) {
                     computerStatus = "Reconnecting Linux computer…";
                     startComputer();
+                }
+                if (klein != null && !klein.isRunning() && KleinRuntime.status.startsWith("Klein running")) {
+                    KleinRuntime.status = "Klein stopped unexpectedly · restarting";
+                    startKlein();
                 }
                 File task = queue.claim(false);
                 if (task == null) {
@@ -215,6 +222,23 @@ public final class AgentService extends Service {
             if (locked) WORKER_LOCK.unlock();
             if (!stopping) stopSelf();
         }
+    }
+
+    /** Starts Klein on this phone (Java model + klein-agent Python in Alpine) unless the user points chat elsewhere. */
+    synchronized void startKlein() {
+        android.content.SharedPreferences p = getSharedPreferences("agent", 0);
+        if (stopping || linux == null || !p.getBoolean("klein_on", true) || !p.getBoolean("klein_local", true)) return;
+        if ((kleinWorker != null && kleinWorker.isAlive()) || (klein != null && klein.isRunning())) return;
+        if (klein == null) klein = new KleinRuntime(this, linux);
+        kleinWorker = new Thread(() -> {
+            try {
+                for (int i = 0; i < 100 && !stopping && !linux.isResidentAlive(); i++) Thread.sleep(600);
+                klein.start();
+            } catch (Exception e) {
+                if (!stopping) KleinRuntime.status = "Klein on this phone failed · " + e.getMessage();
+            }
+        }, "klein-runtime");
+        kleinWorker.start();
     }
 
     /** Fetches Qwen weights as soon as the app starts so the first message doesn't wait on 1.12 GB. */
@@ -444,6 +468,8 @@ public final class AgentService extends Service {
         ActionReview.decide(false);
         if (computerWorker != null) computerWorker.interrupt();
         if (weightsWorker != null) weightsWorker.interrupt();
+        if (klein != null) klein.close();
+        if (kleinWorker != null) kleinWorker.interrupt();
         computerStatus = "Computer stopped";
         running = false;
         if (coder != null) coder.close();

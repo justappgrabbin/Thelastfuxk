@@ -167,6 +167,7 @@ public final class MainActivity extends Activity {
                 return new org.json.JSONObject()
                     .put("kleinOn",settings.getBoolean("klein_on",true))
                     .put("kleinUrl",settings.getString("klein_url",KleinClient.DEFAULT_URL))
+                    .put("kleinLocal",settings.getBoolean("klein_local",true)).put("kleinRuntime",KleinRuntime.status)
                     .put("kleinToken",!settings.getString("klein_token","").isEmpty())
                     .put("proactive",settings.getBoolean("qwen_proactive",true))
                     .put("mcp",org.mobilemcp.ondevice.McpControl.status(MainActivity.this)).toString();
@@ -179,6 +180,7 @@ public final class MainActivity extends Activity {
                 if(v.has("kleinOn")) e.putBoolean("klein_on",v.getBoolean("kleinOn"));
                 if(v.has("kleinUrl")) e.putString("klein_url",KleinClient.normalize(v.getString("kleinUrl")));
                 if(v.has("kleinToken")) e.putString("klein_token",v.getString("kleinToken").trim());
+                if(v.has("kleinLocal")) e.putBoolean("klein_local",v.getBoolean("kleinLocal"));
                 if(v.has("proactive")) e.putBoolean("qwen_proactive",v.getBoolean("proactive"));
                 e.commit();
                 return settings();
@@ -218,6 +220,7 @@ public final class MainActivity extends Activity {
                     case "classic": showClassic(null); break;
                     case "start": startAgent(); break;
                     case "weights": startAgent(); break;
+                    case "klein": startAgent(); break;
                     case "stop": stopService(new Intent(MainActivity.this,AgentService.class)); break;
                     case "console": console(); break;
                 }
