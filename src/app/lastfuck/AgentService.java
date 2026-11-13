@@ -80,6 +80,7 @@ public final class AgentService extends Service {
                 }
                 File task = queue.claim(false);
                 if (task == null) {
+                    if (scheduleAutonomousGoal(queue)) continue;
                     Thread.sleep(1500);
                     continue;
                 }
@@ -87,10 +88,12 @@ public final class AgentService extends Service {
                 String title = "Watcher task";
                 String result;
                 String outcome;
+                boolean autonomousTask = false;
                 try {
                     JSONObject job = queue.load(task);
                     String kind = job.getString("kind");
                     String text = job.getString("text");
+                    autonomousTask = "autonomous".equals(kind);
                     title = ("tasker".equals(kind) ? "Tasker test" : text.replaceAll("\\s+", " "));
                     if (title.length() > 100) title = title.substring(0, 100) + "…";
                     if ("chat".equals(kind)) title = "Chat · " + title;
@@ -116,13 +119,21 @@ public final class AgentService extends Service {
                         result = chat(text);
                         reply = result;
                         outcome = "Reply";
-                    } else if ("agent".equals(kind)) {
-                        coder.start();
-                        final String taskTitle = title;
-                        CodingAgent.Result agent = new CodingAgent(coder::complete, reviewedTools(hands),
-                            phase -> show(taskTitle + " · " + phase)).execute(text);
-                        outcome = agent.status;
-                        result = agent.output;
+                    } else if ("agent".equals(kind) || autonomousTask) {
+                        String session = getSharedPreferences("agent", 0).getString("autonomy_session", "");
+                        if (autonomousTask && (!getSharedPreferences("agent", 0).getBoolean("autonomy", false)
+                            || session.isEmpty() || !text.startsWith("Autonomy session ID: " + session + "\n"))) {
+                            outcome = "Paused";
+                            result = "Autonomous goal changed or was switched off before execution.";
+                        } else {
+                            coder.start();
+                            final String taskTitle = title;
+                            CodingAgent.Result agent = new CodingAgent(coder::complete,
+                                reviewedTools(hands, autonomousTask),
+                                phase -> show(taskTitle + " · " + phase)).execute(text);
+                            outcome = agent.status;
+                            result = agent.output;
+                        }
                         reply = outcome + "\n" + result;
                     } else throw new IllegalArgumentException("Unsupported task type");
                 } catch (Exception e) {
@@ -135,6 +146,7 @@ public final class AgentService extends Service {
                 // Persist each outcome before sending its notification.
                 boolean interrupted = Thread.interrupted();
                 queue.finish(task, outcome, title, result);
+                if (autonomousTask) recordAutonomousOutcome(outcome, result);
                 try { conversations.append("assistant", result, task.getName().split("\\.running-")[0], outcome); }
                 catch (Exception logError) { reply = result + "\nConversation could not be saved: " + logError.getMessage(); }
                 if (interrupted) Thread.currentThread().interrupt();
@@ -177,10 +189,22 @@ public final class AgentService extends Service {
         computerWorker.start();
     }
 
-    private CodingAgent.Tools reviewedTools(HandsTools hands) {
+    private CodingAgent.Tools reviewedTools(HandsTools hands) { return reviewedTools(hands, false); }
+
+    private CodingAgent.Tools reviewedTools(HandsTools hands, boolean unattended) {
         return new CodingAgent.Tools() {
-            public String available() { return hands.available(); }
+            public String available() {
+                return unattended ? "list(path,offset), read(path,offset), write(path,text,append). "
+                    + "Writes may create or append, never overwrite." : hands.available();
+            }
             public JSONObject call(String name, JSONObject args) throws Exception {
+                if (stopping) throw new InterruptedException();
+                if (unattended) {
+                    if (!getSharedPreferences("agent", 0).getBoolean("autonomy", false))
+                        throw new InterruptedException("Autonomy was stopped");
+                    AutonomyPolicy.requireAllowedTool(name, args, linux.workspace);
+                    return hands.call(name, args);
+                }
                 boolean readOnly = java.util.Arrays.asList("read", "list", "observe", "tasker_status").contains(name);
                 if (!readOnly && !getSharedPreferences("agent", 0).getBoolean("autonomy", false)) {
                     show("Waiting for your approval · " + name);
@@ -190,6 +214,38 @@ public final class AgentService extends Service {
                 return hands.call(name, args);
             }
         };
+    }
+
+    private boolean scheduleAutonomousGoal(TaskQueue queue) throws Exception {
+        android.content.SharedPreferences p = getSharedPreferences("agent", 0);
+        String goal = p.getString("autonomy_goal", "").trim();
+        String session = p.getString("autonomy_session", "");
+        int cycles = p.getInt("autonomy_cycles", 0);
+        long now = System.currentTimeMillis();
+        if (!AutonomyPolicy.due(p.getBoolean("autonomy", false), goal, session,
+                cycles, p.getLong("autonomy_next_at", 0L), now)) return false;
+        String prompt = AutonomyPolicy.prompt(session, goal, p.getString("autonomy_last", ""));
+        queue.enqueue("autonomous", prompt);
+        p.edit().putInt("autonomy_cycles", cycles + 1)
+            .putLong("autonomy_next_at", now + AutonomyPolicy.COOLDOWN_MS)
+            .putString("autonomy_status", "Autonomy cycle " + (cycles + 1)
+                + " of " + AutonomyPolicy.MAX_CYCLES + " queued").commit();
+        show("Autonomy · cycle " + (cycles + 1) + " queued");
+        return true;
+    }
+
+    private void recordAutonomousOutcome(String outcome, String result) {
+        android.content.SharedPreferences p = getSharedPreferences("agent", 0);
+        int cycle = p.getInt("autonomy_cycles", 0);
+        boolean pause = AutonomyPolicy.pauses(outcome) || cycle >= AutonomyPolicy.MAX_CYCLES;
+        String label = pause
+            ? ("Autonomy paused after cycle " + cycle + " · " + outcome)
+            : ("Autonomy cycle " + cycle + " recorded · next check in 10 minutes");
+        p.edit().putString("autonomy_last", HandsTools.excerpt(result, 1600))
+            .putString("autonomy_status", label)
+            .putBoolean("autonomy", !pause && p.getBoolean("autonomy", false))
+            .putLong("autonomy_next_at", System.currentTimeMillis() + AutonomyPolicy.COOLDOWN_MS)
+            .commit();
     }
 
     private String conversationContext() throws Exception {
