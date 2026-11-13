@@ -213,7 +213,7 @@ public final class AgentService extends Service {
                     return hands.call(name, args);
                 }
                 boolean readOnly = java.util.Arrays.asList("read", "list", "observe", "tasker_status").contains(name);
-                if (!readOnly && !getSharedPreferences("agent", 0).getBoolean("autonomy", false)) {
+                if (!readOnly) {
                     show("Waiting for your approval · " + name);
                     ActionReview.await(new JSONObject().put("tool", name).put("args", args).toString());
                 }
