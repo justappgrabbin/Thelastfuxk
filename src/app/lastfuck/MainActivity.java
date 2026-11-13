@@ -129,7 +129,6 @@ public final class MainActivity extends Activity {
                     : "Autonomy paused by user").commit();
             if (enabled) {
                 runOnUiThread(() -> { if (!AgentService.running) startAgent(); });
-                ActionReview.decide(true);
             }
         }
         @android.webkit.JavascriptInterface public String saveGoal(String goal) {
@@ -380,7 +379,6 @@ public final class MainActivity extends Activity {
             settings.edit().putBoolean("autonomy", enabled).commit();
             if (enabled) {
                 if (!AgentService.running) startAgent();
-                ActionReview.decide(true);
             }
         });
         content.addView(autonomy);
