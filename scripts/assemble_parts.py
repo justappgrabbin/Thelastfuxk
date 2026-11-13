@@ -126,6 +126,13 @@ def main():
             target.write_bytes(data)
         missing = [name for name in REQUIRED if not (output / name).is_file() or (output / name).stat().st_size == 0]
         if missing:
+            print("Archive inventory:", len(seen), "files")
+            print("Runtime and asset candidates:")
+            candidates = [name for name in sorted(seen, key=str)
+                          if "alpine" in str(name).lower() or "rootfs" in str(name).lower()
+                          or str(name).startswith("assets/") or str(name).startswith("native/")]
+            for name in candidates[:120]:
+                print("  ", str(name), f"({len(seen[name]):,} bytes)")
             raise SystemExit(f"Import incomplete; missing required components: {', '.join(missing)}")
         print(f"Validated {len(seen)} files ({total_size:,} uncompressed bytes). Ready to import.")
 
