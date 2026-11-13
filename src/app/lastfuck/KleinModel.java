@@ -39,8 +39,13 @@ final class KleinModel {
             JSONObject tensors = header.getJSONObject("tensors");
             // Tensors are stored back to back in header order; read them in offset order.
             java.util.List<String> names = new java.util.ArrayList<>();
-            for (java.util.Iterator<String> it = tensors.keys(); it.hasNext();) names.add(it.next());
-            names.sort((a, b) -> Long.compare(tensors.getJSONArray(a).getLong(1), tensors.getJSONArray(b).getLong(1)));
+            final Map<String, Long> offsets = new HashMap<>();
+            for (java.util.Iterator<String> it = tensors.keys(); it.hasNext();) {
+                String name = it.next();
+                names.add(name);
+                offsets.put(name, tensors.getJSONArray(name).getLong(1));
+            }
+            names.sort((a, b) -> Long.compare(offsets.get(a), offsets.get(b)));
             long pos = 0;
             for (String name : names) {
                 JSONArray spec = tensors.getJSONArray(name);
