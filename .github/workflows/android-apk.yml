@@ -57,16 +57,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: v0.1.3-autonomy-20261113
         run: |
           set -euo pipefail
+          RELEASE_TAG="v0.1.4-zip-${GITHUB_SHA:0:12}"
+          APK_NAME="The-Last-Fuxk-${GITHUB_SHA:0:12}.apk"
+          cp "$RUNNER_TEMP/The-Last-Fuck-debug.apk" "$RUNNER_TEMP/$APK_NAME"
+          sha256sum "$RUNNER_TEMP/$APK_NAME" > "$RUNNER_TEMP/$APK_NAME.sha256"
+          sed -i "s|$RUNNER_TEMP/||" "$RUNNER_TEMP/$APK_NAME.sha256"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Prerelease already exists; not overwriting any published file."
+            echo "This exact source commit already has a release."
             exit 0
           fi
           gh release create "$RELEASE_TAG" \
-            "$RUNNER_TEMP/The-Last-Fuck-debug.apk#The-Last-Fuxk-Autonomy-v0.1.3.apk" \
+            "$RUNNER_TEMP/$APK_NAME" "$RUNNER_TEMP/$APK_NAME.sha256" \
             --target "$GITHUB_SHA" \
-            --title "The Last Fuxk — Autonomy v0.1.3 (debug)" \
-            --notes "Opt-in, bounded autonomous goals with persistent checkpoints; up to three work cycles and a 10-minute cooldown. Unattended actions are limited to inspecting, creating, or appending workspace files. Source: fix/agent-autonomy-hands. CI tests and Android compilation passed. This is a debug-signed APK; on-device functional testing and matching the installed APK signature are NOT verified. The Qwen model weights are not bundled and may require initial download." \
+            --title "The Last Fuxk 0.1.4 · ZIP runner · ${GITHUB_SHA:0:12}" \
+            --notes "Source commit: $GITHUB_SHA. Includes ZIP web app runner, HTML entry selection, live preview, save-to-phone, navigation updates, phone Klein runtime and autonomy fixes. Android compilation and regression checks passed for this exact commit. Debug-signed APK; physical-phone operation and compatibility with an existing installation signature remain unverified. Qwen weights may require initial download. Build: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --prerelease
