@@ -25,6 +25,24 @@ jobs:
           curl --fail --location --retry 3 --output "$RUNNER_TEMP/json.jar" \
             https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar
           test -s "$RUNNER_TEMP/json.jar"
+      - name: Validate autonomous WebView controls and JavaScript syntax
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+          html = pathlib.Path("assets/computer.html").read_text(encoding="utf-8")
+          for control in ('autonomyGoal', 'autonomyStatus', 'autonomy', 'watcher'):
+              if f'id="{control}"' not in html:
+                  raise SystemExit("WebView missing control: " + control)
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', html, flags=re.S | re.I)
+          if len(scripts) != 1:
+              raise SystemExit("Expected exactly one inline WebView script")
+          for name in ('saveAutonomyGoal', 'resetAutonomyGoal', 'toggleAutonomy', 'refreshCynthia'):
+              if f'function {name}(' not in scripts[0]:
+                  raise SystemExit("WebView missing function " + name)
+          pathlib.Path('/tmp/lastfuxk-webview.js').write_text(scripts[0], encoding='utf-8')
+          PY
+          node --check /tmp/lastfuxk-webview.js
       - name: Run existing Java regression suite
         env:
           JSON_JAR: ${{ runner.temp }}/json.jar
