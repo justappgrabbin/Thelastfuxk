@@ -115,7 +115,7 @@ final class LocalCoder implements AutoCloseable {
         File log = new File(context.getCacheDir(), "qwen-runtime.log");
         status.accept("Starting the local Qwen server");
         server = new ProcessBuilder(executable.toString(), "--model", weights.toString(), "--host", "127.0.0.1",
-            "--port", String.valueOf(port), "--api-key", token, "--ctx-size", "4096",
+            "--port", String.valueOf(port), "--api-key", token, "--ctx-size", "8192",
             "--parallel", "1", "--threads", "4", "--n-gpu-layers", "0", "--no-webui",
             "--alias", "qwen-coder").redirectErrorStream(true).redirectOutput(log).start();
         if (stopped) { server.destroyForcibly(); throw new InterruptedIOException(); }
@@ -134,7 +134,7 @@ final class LocalCoder implements AutoCloseable {
 
     String complete(JSONArray messages, boolean toolJson) throws Exception {
         JSONObject payload = new JSONObject().put("model", "qwen-coder").put("messages", messages)
-            .put("temperature", 0.15).put("max_tokens", 768);
+            .put("temperature", 0.15).put("max_tokens", 1536);
         if (toolJson) payload.put("response_format", new JSONObject().put("type", "json_object"));
         return new JSONObject(call("/v1/chat/completions", payload, 240_000)).getJSONArray("choices")
             .getJSONObject(0).getJSONObject("message").getString("content");

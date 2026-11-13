@@ -48,6 +48,8 @@ final class CodingAgent {
         int successes = 0, rejectedDone = 0;
         boolean pendingExternal = false;
         java.util.Set<String> failedTools = new java.util.LinkedHashSet<>();
+        int invalidStreak = 0, unsupported = 0, repeats = 0;
+        String lastCall = "";
         for (int step = 1; step <= 24; step++) {
             if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
             JSONArray messages = new JSONArray().put(message("system", instructions))
@@ -58,14 +60,34 @@ final class CodingAgent {
             progress.accept(conversational ? (successes == 0 ? "Cynthia is thinking…" : "Cynthia is working · " + successes + " tool results")
                 : "Qwen planning · step " + step + " of 24");
             String raw = coder.complete(messages).trim();
-            JSONObject action;
-            try {
-                if (raw.startsWith("```")) raw = raw.substring(raw.indexOf('\n') + 1, raw.lastIndexOf("```")).trim();
-                action = new JSONObject(raw);
-            } catch (Exception e) {
-                remember(recent, message("user", "Invalid JSON. Return one tool call or blocked object. No action has been executed for that response."));
+            JSONObject action = parseAction(raw);
+            if (action == null) {
+                invalidStreak++;
+                // Plain prose in conversation is a real answer, not a protocol failure.
+                if (conversational && successes == 0 && raw.indexOf('{') < 0 && !raw.isEmpty())
+                    return new Result("Reply", raw);
                 evidence.append("\nStep ").append(step).append(": invalid model JSON; no action executed.");
+                if (invalidStreak >= 3) return new Result("Blocked",
+                    "The model returned unusable output 3 times in a row, so I stopped instead of looping."
+                    + "\nLast output: " + HandsTools.excerpt(raw, 400) + "\n\nRecorded tool evidence:\n" + evidence);
+                // Show the model its own bad output so the next attempt differs instead of repeating it.
+                remember(recent, message("assistant", HandsTools.excerpt(raw, 600)));
+                remember(recent, message("user", "That was not one valid JSON object (it may have been cut off). "
+                    + "No action was executed. Reply with ONE short JSON object only"
+                    + (conversational ? ", e.g. {\"reply\":\"...\"}" : "") + ". Keep file text short or use append=true across steps."));
                 continue;
+            }
+            invalidStreak = 0;
+            if (action.optString("tool").isEmpty()) {
+                for (String key : new String[]{"reply", "response", "message", "answer", "text", "content"})
+                    if (!action.optString(key).trim().isEmpty() && action.opt(key) instanceof String) {
+                        if (!action.has("reply")) action.put("reply", action.getString(key));
+                        break;
+                    }
+                if (!conversational && action.has("reply") && !action.has("status") && successes == 0) {
+                    // A task-mode chat answer: treat as a question/clarification, not a completion.
+                    return new Result("Reply", action.getString("reply"));
+                }
             }
             String name = action.optString("tool");
             if (name.isEmpty()) {
@@ -96,9 +118,18 @@ final class CodingAgent {
                     return result(pendingExternal ? "Awaiting confirmation" : "Work recorded · review required",
                         action, evidence, "Tool evidence is below. Overall request completion is not independently verified.");
                 }
-                remember(recent, message("user", "Unsupported response. Use a tool call or status blocked with a reason."));
+                if (++unsupported >= 3) return new Result("Blocked",
+                    "The model kept answering in an unsupported shape, so I stopped instead of looping.\nLast output: "
+                    + HandsTools.excerpt(raw, 400) + "\n\nRecorded tool evidence:\n" + evidence);
+                remember(recent, message("user", "Unsupported response. Use a tool call"
+                    + (conversational ? ", {\"reply\":\"...\"}," : "") + " or status blocked with a reason."));
                 continue;
             }
+            String signature = name + action.optJSONObject("args");
+            repeats = signature.equals(lastCall) ? repeats + 1 : 0;
+            lastCall = signature;
+            if (repeats >= 3) return new Result("Blocked", "The model repeated the identical " + name
+                + " call 4 times, so I stopped instead of looping.\n\nRecorded tool evidence:\n" + evidence);
             progress.accept("Running tool · " + name);
             JSONObject response;
             try {
@@ -113,6 +144,8 @@ final class CodingAgent {
             else failedTools.add(name);
             if (ok) successes++;
             if (ok && !response.optBoolean("complete", true)) pendingExternal = true;
+            if (repeats > 0) remember(recent, message("user", "You already made this exact " + name
+                + " call. Use its result and take the next step instead of repeating it."));
             String entry = "Step " + step + " · " + name + " · " + (ok ? "succeeded" : "FAILED")
                 + (response.has("exitCode") ? " · exit " + response.getInt("exitCode") : "")
                 + (response.has("path") ? " · " + response.optString("path") : "")
@@ -126,6 +159,33 @@ final class CodingAgent {
         }
         return new Result("Blocked", "Reached the 24-step limit; the request is not complete."
             + "\nRecorded tool evidence:\n" + evidence);
+    }
+
+    /** Extracts one JSON object even when wrapped in code fences or surrounded by prose. */
+    static JSONObject parseAction(String raw) {
+        if (raw == null) return null;
+        String text = raw.trim();
+        if (text.startsWith("```")) {
+            int nl = text.indexOf('\n'), end = text.lastIndexOf("```");
+            text = nl >= 0 && end > nl ? text.substring(nl + 1, end).trim() : text.replace("```", "").trim();
+        }
+        try { return new JSONObject(text); } catch (Exception ignored) { }
+        for (int start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
+            int depth = 0; boolean quoted = false, escaped = false;
+            for (int i = start; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (escaped) { escaped = false; continue; }
+                if (c == '\\') { escaped = quoted; continue; }
+                if (c == '"') { quoted = !quoted; continue; }
+                if (quoted) continue;
+                if (c == '{') depth++;
+                else if (c == '}' && --depth == 0) {
+                    try { return new JSONObject(text.substring(start, i + 1)); }
+                    catch (Exception ignored) { break; }
+                }
+            }
+        }
+        return null;
     }
 
     private static Result result(String status, JSONObject action, StringBuilder evidence, String explanation) {
