@@ -217,6 +217,34 @@ public final class MainActivity extends Activity {
                 return new org.json.JSONObject().put("exists",f.isFile()).put("modified",f.lastModified()).put("bytes",f.length()).toString();
             } catch(Exception e) { return error(e); }
         }
+        /** One-tap save: asks Android where to put a copy of this workspace file (Downloads, Drive, etc.). */
+        @android.webkit.JavascriptInterface public String saveFile(String path) {
+            try {
+                java.io.File f=workspacePath(path);
+                if(!f.isFile()) throw new java.io.IOException("File not found: "+path);
+                runOnUiThread(()->askSaveLocation(path,f.getName()));
+                return "{\"ok\":true}";
+            } catch(Exception e) { return error(e); }
+        }
+        /** Zips a workspace folder ("" = everything) into .exports/ and asks where to save it. */
+        @android.webkit.JavascriptInterface public String saveZip(String folder) {
+            try {
+                java.io.File root=new java.io.File(getFilesDir(),"workspace").getCanonicalFile();
+                java.io.File dir=folder==null||folder.isEmpty()?root:workspacePath(folder);
+                if(!dir.isDirectory()) throw new java.io.IOException("Folder not found: "+folder);
+                String base=dir.equals(root)?"workspace":dir.getName();
+                String rel=".exports/"+base+"-"+new java.text.SimpleDateFormat("yyyyMMdd-HHmm",java.util.Locale.US).format(new java.util.Date())+".zip";
+                java.io.File zip=workspacePath(rel);
+                zip.getParentFile().mkdirs();
+                int[] count={0};
+                try(java.util.zip.ZipOutputStream out=new java.util.zip.ZipOutputStream(new java.io.FileOutputStream(zip))) {
+                    addToZip(out,dir,dir.equals(root)?"":dir.getName()+"/",count);
+                }
+                if(count[0]==0) { zip.delete(); throw new java.io.IOException("That folder is empty"); }
+                runOnUiThread(()->askSaveLocation(rel,zip.getName()));
+                return new org.json.JSONObject().put("ok",true).put("files",count[0]).toString();
+            } catch(Exception e) { return error(e); }
+        }
         @android.webkit.JavascriptInterface public void live(String path) { runOnUiThread(()->showLivePreview(path)); }
         @android.webkit.JavascriptInterface public void review(boolean allow) { ActionReview.decide(allow); }
         @android.webkit.JavascriptInterface public void control(String action) {
@@ -473,6 +501,30 @@ public final class MainActivity extends Activity {
             String notice = message;
             runOnUiThread(() -> Toast.makeText(this, notice, Toast.LENGTH_LONG).show());
         }, "workspace-transfer").start();
+    }
+
+    private void askSaveLocation(String relativePath, String name) {
+        exportPath = relativePath;
+        String ext = name.contains(".") ? name.substring(name.lastIndexOf('.') + 1).toLowerCase(java.util.Locale.ROOT) : "";
+        String mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+        startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+            .setType(mime == null ? "application/octet-stream" : mime).putExtra(Intent.EXTRA_TITLE, name), EXPORT);
+    }
+
+    private static void addToZip(java.util.zip.ZipOutputStream out, java.io.File dir, String prefix, int[] count) throws java.io.IOException {
+        java.io.File[] items = dir.listFiles();
+        if (items == null) return;
+        for (java.io.File f : items) {
+            if (f.getName().equals(".exports") || java.nio.file.Files.isSymbolicLink(f.toPath())) continue;
+            if (f.isDirectory()) { addToZip(out, f, prefix + f.getName() + "/", count); continue; }
+            out.putNextEntry(new java.util.zip.ZipEntry(prefix + f.getName()));
+            try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+                byte[] b = new byte[65536];
+                for (int n; (n = in.read(b)) != -1;) out.write(b, 0, n);
+            }
+            out.closeEntry();
+            count[0]++;
+        }
     }
 
     private java.io.File workspacePath(String path) throws java.io.IOException {
