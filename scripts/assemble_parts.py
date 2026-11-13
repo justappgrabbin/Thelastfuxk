@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate and reassemble The Last Fuxk's four ZIP uploads without deleting source."""
 import argparse
+import gzip
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -124,6 +125,30 @@ def main():
             seen[rel] = data
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
+        # The source ZIPs preserve Alpine as four sequential 9 MB chunks.
+        # Join them into the original .tar.gz without deleting any chunk.
+        alpine = output / "assets/alpine-coder.tar.gz"
+        chunks = [output / f"assets/alpine-coder.tar.gz.part{i:02d}" for i in range(1, 5)]
+        if not alpine.exists() and all(part.is_file() for part in chunks):
+            with alpine.open("wb") as dst:
+                for part in chunks:
+                    with part.open("rb") as src:
+                        shutil.copyfileobj(src, dst)
+            # Read the complete gzip stream to check integrity and CRC.
+            expanded = 0
+            try:
+                with gzip.open(alpine, "rb") as stream:
+                    while True:
+                        block = stream.read(1024 * 1024)
+                        if not block:
+                            break
+                        expanded += len(block)
+                        if expanded > MAX_TOTAL_BYTES:
+                            raise ValueError("Alpine root filesystem expands beyond 1 GiB")
+            except Exception:
+                alpine.unlink()
+                raise
+            print(f"Reconstructed Alpine archive from 4 parts ({alpine.stat().st_size:,} compressed bytes, {expanded:,} expanded bytes)")
         missing = [name for name in REQUIRED if not (output / name).is_file() or (output / name).stat().st_size == 0]
         if missing:
             print("Archive inventory:", len(seen), "files")
