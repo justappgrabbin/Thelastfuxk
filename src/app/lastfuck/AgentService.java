@@ -89,14 +89,21 @@ public final class AgentService extends Service {
                 String result;
                 String outcome;
                 boolean autonomousTask = false;
+                String autonomousSession = "";
                 try {
                     JSONObject job = queue.load(task);
                     String kind = job.getString("kind");
                     String text = job.getString("text");
                     autonomousTask = "autonomous".equals(kind);
+                    if (autonomousTask && text.startsWith("Autonomy session ID: ")) {
+                        int lineEnd = text.indexOf('\n');
+                        if (lineEnd > 0) autonomousSession = text.substring("Autonomy session ID: ".length(), lineEnd);
+                    }
                     title = ("tasker".equals(kind) ? "Tasker test" : text.replaceAll("\\s+", " "));
                     if (title.length() > 100) title = title.substring(0, 100) + "…";
                     if ("chat".equals(kind)) title = "Chat · " + title;
+                    if (autonomousTask) title = "Autonomy · " + HandsTools.excerpt(
+                        getSharedPreferences("agent", 0).getString("autonomy_goal", ""), 80);
                     show("Working · " + title);
                     if ("assistant".equals(kind)) {
                         String normalized = text.trim().toLowerCase(java.util.Locale.ROOT).replaceAll("[!?.]+$", "");
@@ -146,7 +153,7 @@ public final class AgentService extends Service {
                 // Persist each outcome before sending its notification.
                 boolean interrupted = Thread.interrupted();
                 queue.finish(task, outcome, title, result);
-                if (autonomousTask) recordAutonomousOutcome(outcome, result);
+                if (autonomousTask) recordAutonomousOutcome(autonomousSession, outcome, result);
                 try { conversations.append("assistant", result, task.getName().split("\\.running-")[0], outcome); }
                 catch (Exception logError) { reply = result + "\nConversation could not be saved: " + logError.getMessage(); }
                 if (interrupted) Thread.currentThread().interrupt();
@@ -234,8 +241,11 @@ public final class AgentService extends Service {
         return true;
     }
 
-    private void recordAutonomousOutcome(String outcome, String result) {
+    private void recordAutonomousOutcome(String taskSession, String outcome, String result) {
         android.content.SharedPreferences p = getSharedPreferences("agent", 0);
+        // A changed goal creates a new session. Old queued or running work must
+        // never pause, advance or overwrite the state of the new goal.
+        if (taskSession.isEmpty() || !taskSession.equals(p.getString("autonomy_session", ""))) return;
         int cycle = p.getInt("autonomy_cycles", 0);
         boolean pause = AutonomyPolicy.pauses(outcome) || cycle >= AutonomyPolicy.MAX_CYCLES;
         String label = pause
