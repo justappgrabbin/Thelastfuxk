@@ -93,7 +93,8 @@ public final class MainActivity extends Activity {
                     .put("plan",new org.json.JSONObject(AgentService.plan))
                     .put("weights",LocalCoder.weightsStatus).put("weightsPercent",LocalCoder.weightsPercent)
                     .put("weightsReady",LocalCoder.weightsReady)
-                    .put("lastOutput",AgentService.lastOutput).put("klein",AgentService.kleinStatus)
+                    .put("lastOutput",AgentService.lastOutput)
+                    .put("outputs",outputsJson()).put("klein",AgentService.kleinStatus)
                     .put("manual",AgentService.manualStatus).put("history",queue.history())
                     .put("messages",new ConversationLog(getFilesDir()).tail(100));
                 return value.toString();
@@ -210,6 +211,13 @@ public final class MainActivity extends Activity {
                 return org.mobilemcp.ondevice.McpControl.status(MainActivity.this).toString();
             } catch(Exception e) { return error(e); }
         }
+        @android.webkit.JavascriptInterface public String stat(String path) {
+            try {
+                java.io.File f=new WorkspaceBrowser(new java.io.File(getFilesDir(),"workspace")).resolve(path);
+                return new org.json.JSONObject().put("exists",f.isFile()).put("modified",f.lastModified()).put("bytes",f.length()).toString();
+            } catch(Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public void live(String path) { runOnUiThread(()->showLivePreview(path)); }
         @android.webkit.JavascriptInterface public void review(boolean allow) { ActionReview.decide(allow); }
         @android.webkit.JavascriptInterface public void control(String action) {
             runOnUiThread(()-> {
@@ -225,6 +233,70 @@ public final class MainActivity extends Activity {
                     case "console": console(); break;
                 }
             });
+        }
+    }
+
+    private static org.json.JSONArray outputsJson() {
+        org.json.JSONArray a=new org.json.JSONArray();
+        synchronized (AgentService.outputs) { for (String p : AgentService.outputs) a.put(p); }
+        return a;
+    }
+
+    /**
+     * Full-screen interactive preview of a workspace page. A separate WebView with NO JavaScript bridge, so the page's
+     * own scripts run but can't reach the app. Relative files (css/js/images) load from the workspace; the internet is blocked.
+     */
+    private void showLivePreview(String path) {
+        try {
+            final java.io.File root=new java.io.File(getFilesDir(),"workspace");
+            final WorkspaceBrowser browser=new WorkspaceBrowser(root);
+            java.io.File file=browser.resolve(path);
+            if(!file.isFile()) throw new java.io.IOException("File not found: "+path);
+            final String folder=browser.relative(file.getParentFile());
+            final android.app.Dialog dialog=new android.app.Dialog(this,android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+            LinearLayout box=new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setBackgroundColor(Color.rgb(22,11,29));
+            LinearLayout bar=new LinearLayout(this); bar.setPadding(dp(12),dp(8),dp(12),dp(8)); bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            TextView title=new TextView(this); title.setText("Live · "+path); title.setTextColor(Color.rgb(214,255,122)); title.setSingleLine(true);
+            bar.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+            final android.webkit.WebView view=new android.webkit.WebView(this);
+            Button reload=new Button(this); reload.setText("Reload"); reload.setOnClickListener(v->view.reload());
+            Button close=new Button(this); close.setText("Close"); close.setOnClickListener(v->dialog.dismiss());
+            bar.addView(reload); bar.addView(close);
+            box.addView(bar);
+            view.getSettings().setJavaScriptEnabled(true);
+            view.getSettings().setDomStorageEnabled(true);
+            view.getSettings().setAllowFileAccess(false);
+            view.getSettings().setAllowContentAccess(false);
+            view.setWebViewClient(new android.webkit.WebViewClient() {
+                @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView v, android.webkit.WebResourceRequest r) {
+                    return !"preview.local".equals(r.getUrl().getHost());
+                }
+                @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView v, android.webkit.WebResourceRequest r) {
+                    android.net.Uri u=r.getUrl();
+                    if(!"preview.local".equals(u.getHost()))
+                        return new android.webkit.WebResourceResponse("text/plain","UTF-8",403,"Blocked",null,new java.io.ByteArrayInputStream(new byte[0]));
+                    try {
+                        String rel=u.getPath()==null?"":u.getPath().replaceFirst("^/","");
+                        java.io.File f=browser.resolve(rel);
+                        if(f.isDirectory()) f=new java.io.File(f,"index.html");
+                        String name=f.getName().toLowerCase(java.util.Locale.ROOT);
+                        String ext=name.contains(".")?name.substring(name.lastIndexOf('.')+1):"";
+                        String mime=android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+                        if(ext.equals("js")||ext.equals("mjs")) mime="text/javascript";
+                        if(mime==null) mime="application/octet-stream";
+                        return new android.webkit.WebResourceResponse(mime,"UTF-8",new java.io.FileInputStream(f));
+                    } catch(Exception e) {
+                        return new android.webkit.WebResourceResponse("text/plain","UTF-8",404,"Not found",null,new java.io.ByteArrayInputStream(new byte[0]));
+                    }
+                }
+            });
+            box.addView(view,new LinearLayout.LayoutParams(-1,0,1));
+            dialog.setContentView(box);
+            dialog.setOnDismissListener(d->view.destroy());
+            dialog.show();
+            view.loadUrl("https://preview.local/"+(folder.isEmpty()?"":folder+"/")+file.getName());
+        } catch(Exception e) {
+            android.widget.Toast.makeText(this,"Preview: "+e.getMessage(),android.widget.Toast.LENGTH_LONG).show();
         }
     }
 

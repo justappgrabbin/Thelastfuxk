@@ -25,6 +25,8 @@ public final class AgentService extends Service {
     static volatile String plan = "{}";
     /** Last workspace file Qwen wrote, for the preview bar. */
     static volatile String lastOutput = "";
+    /** Recent files Qwen wrote, newest last (for the Preview tab). */
+    static final java.util.LinkedHashSet<String> outputs = new java.util.LinkedHashSet<>();
     static volatile String kleinStatus = "Klein not contacted yet";
     private Thread weightsWorker;
     private Thread kleinWorker;
@@ -332,7 +334,14 @@ public final class AgentService extends Service {
 
     private static JSONObject track(String name, JSONObject args, JSONObject result) {
         if ("write".equals(name) && result.optBoolean("ok") && args != null && !args.optString("path").isEmpty())
+        {
             lastOutput = args.optString("path");
+            synchronized (outputs) {
+                outputs.remove(lastOutput);
+                outputs.add(lastOutput);
+                while (outputs.size() > 30) outputs.remove(outputs.iterator().next());
+            }
+        }
         return result;
     }
 
