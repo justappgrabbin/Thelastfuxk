@@ -90,6 +90,9 @@ public final class MainActivity extends Activity {
                     .put("autonomyCycles",settings.getInt("autonomy_cycles",0))
                     .put("autonomyLimit",AutonomyPolicy.MAX_CYCLES)
                     .put("review",ActionReview.pending)
+                    .put("plan",new org.json.JSONObject(AgentService.plan))
+                    .put("weights",LocalCoder.weightsStatus).put("weightsPercent",LocalCoder.weightsPercent)
+                    .put("weightsReady",LocalCoder.weightsReady)
                     .put("manual",AgentService.manualStatus).put("history",queue.history())
                     .put("messages",new ConversationLog(getFilesDir()).tail(100));
                 return value.toString();
@@ -167,6 +170,7 @@ public final class MainActivity extends Activity {
                     case "export": pickFile(true); break;
                     case "classic": showClassic(null); break;
                     case "start": startAgent(); break;
+                    case "weights": startAgent(); break;
                     case "stop": stopService(new Intent(MainActivity.this,AgentService.class)); break;
                     case "console": console(); break;
                 }

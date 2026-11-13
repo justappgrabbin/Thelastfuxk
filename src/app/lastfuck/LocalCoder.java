@@ -27,46 +27,107 @@ final class LocalCoder implements AutoCloseable {
         this.status = status;
     }
 
-    private File model() throws Exception {
+    /** Human-readable weights state and 0-100 progress, shown in the app and notification. */
+    static volatile String weightsStatus = "Qwen weights not checked yet";
+    static volatile int weightsPercent = 0;
+    static volatile boolean weightsReady = false;
+
+    /** Downloads and verifies the weights if missing. Safe to call at startup and again from start(). */
+    synchronized File ensureModel() throws Exception { return model(); }
+
+    private synchronized File model() throws Exception {
         File model = new File(context.getFilesDir(), "qwen-coder.gguf");
-        if (model.length() == SIZE) return model;
-        if (context.getFilesDir().getUsableSpace() < SIZE + 100_000_000L)
-            throw new IOException("Free at least 1.2 GB to install Qwen.");
+        if (model.length() == SIZE) { markReady(); return model; }
         File partial = new File(model.getPath() + ".part");
+        if (partial.length() > SIZE) partial.delete();
+        if (context.getFilesDir().getUsableSpace() + partial.length() < SIZE + 100_000_000L) {
+            weightsStatus = "Need about 1.2 GB free to download Qwen weights";
+            throw new IOException("Free at least 1.2 GB to install Qwen.");
+        }
+        IOException last = null;
+        for (int attempt = 1; attempt <= 5 && !stopped; attempt++) {
+            try {
+                downloadInto(partial, attempt);
+                break;
+            } catch (InterruptedIOException e) { throw e;
+            } catch (IOException e) {
+                last = e;
+                weightsStatus = "Download interrupted (" + e.getMessage() + ") · retry " + attempt + " of 5, resuming at "
+                    + (100 * partial.length() / SIZE) + "%";
+                status.accept(weightsStatus);
+                Thread.sleep(Math.min(30_000L, 3_000L * attempt));
+            }
+        }
+        if (stopped) throw new InterruptedIOException();
+        if (partial.length() != SIZE) throw last != null ? last : new IOException("Qwen download incomplete");
+        weightsStatus = "Verifying Qwen weights checksum…";
+        status.accept(weightsStatus);
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (InputStream in = new FileInputStream(partial)) {
+            byte[] buffer = new byte[1024 * 1024];
+            for (int count; (count = in.read(buffer)) != -1;) {
+                if (stopped) throw new InterruptedIOException();
+                digest.update(buffer, 0, count);
+            }
+        }
+        try { verify(partial.length(), digest); }
+        catch (IOException bad) {
+            partial.delete(); // corrupt bytes cannot be resumed; next start re-downloads cleanly
+            weightsStatus = "Qwen checksum mismatch · download will restart";
+            throw bad;
+        }
+        if (!partial.renameTo(model)) throw new IOException("Could not install the verified model");
+        markReady();
+        return model;
+    }
+
+    private void markReady() {
+        weightsReady = true;
+        weightsPercent = 100;
+        weightsStatus = "Qwen weights installed · 1.12 GB verified";
+    }
+
+    /** Appends to the partial file using an HTTP Range request so drops resume instead of restarting. */
+    private void downloadInto(File partial, int attempt) throws Exception {
+        long have = partial.length();
+        if (have >= SIZE) return;
         HttpURLConnection request = (HttpURLConnection) new URL(MODEL_URL).openConnection();
         request.setConnectTimeout(20_000);
-        request.setReadTimeout(45_000);
+        request.setReadTimeout(60_000);
+        request.setInstanceFollowRedirects(true);
+        if (have > 0) request.setRequestProperty("Range", "bytes=" + have + "-");
         activeRequest = request;
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        long total = 0;
-        long nextUpdate = 0;
         try {
-            status.accept("Downloading Qwen Coder. First start only · 1.12 GB");
             if (stopped) throw new InterruptedIOException();
+            weightsStatus = have > 0 ? "Resuming Qwen download · " + (100 * have / SIZE) + "%"
+                : "Downloading Qwen Coder weights · first start only · 1.12 GB";
+            status.accept(weightsStatus);
             int response = request.getResponseCode();
-            if (response != 200) throw new IOException("Qwen model download returned HTTP " + response);
-            try (InputStream in = request.getInputStream(); FileOutputStream out = new FileOutputStream(partial)) {
+            boolean append = response == 206;
+            if (response == 200 && have > 0) have = 0; // server ignored Range: start over
+            else if (!append && response != 200) throw new IOException("HTTP " + response);
+            long total = have;
+            long nextUpdate = 0;
+            try (InputStream in = request.getInputStream(); FileOutputStream out = new FileOutputStream(partial, append)) {
                 byte[] buffer = new byte[256 * 1024];
                 for (int count; (count = in.read(buffer)) != -1;) {
                     if (stopped) throw new InterruptedIOException();
                     total += count;
                     if (total > SIZE) throw new IOException("Unexpected model size");
-                    digest.update(buffer, 0, count);
                     out.write(buffer, 0, count);
                     if (total >= nextUpdate) {
-                        status.accept("Downloading Qwen Coder · " + (100 * total / SIZE) + "%");
-                        nextUpdate = total + SIZE / 50;
+                        weightsPercent = (int) (100 * total / SIZE);
+                        weightsStatus = "Downloading Qwen Coder · " + weightsPercent + "% of 1.12 GB";
+                        status.accept(weightsStatus);
+                        nextUpdate = total + SIZE / 100;
                     }
                 }
                 out.getFD().sync();
             }
-            verify(total, digest);
-            if (!partial.renameTo(model)) throw new IOException("Could not install the verified model");
-            return model;
+            if (total != SIZE) throw new IOException("connection closed at " + (100 * total / SIZE) + "%");
         } finally {
             request.disconnect();
             activeRequest = null;
-            partial.delete();
         }
     }
 
@@ -93,6 +154,7 @@ final class LocalCoder implements AutoCloseable {
             }
             verify(size, digest);
             if (!partial.renameTo(model)) throw new IOException("Could not install imported Qwen");
+            weightsReady = true; weightsPercent = 100; weightsStatus = "Qwen weights imported · verified";
         } finally {
             partial.delete();
         }

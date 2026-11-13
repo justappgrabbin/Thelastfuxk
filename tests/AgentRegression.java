@@ -77,6 +77,19 @@ public final class AgentRegression {
         r = new CodingAgent(new Script("{\"response\":\"I am here\"}"), new Tools(root), x -> {}).converse("you there?", "");
         check(r.status.equals("Reply") && r.output.equals("I am here"), "reply under another key still speaks");
         t = new Tools(root);
+        java.util.List<JSONObject> plans = new java.util.ArrayList<>();
+        String readCall = call("read", new JSONObject().put("path", "hello.py"));
+        r = new CodingAgent(new Script(write, "Plan: {\"steps\":[\"Write hello.py\",\"Read it back\"]}",
+            new JSONObject(readCall).put("step", 2).toString(), done), t, x -> {}).onPlan(plans::add).execute("Create hello.py and check it");
+        JSONObject last = plans.get(plans.size() - 1);
+        check(last.getInt("total") == 2 && last.getJSONArray("steps").getJSONObject(0).getString("text").equals("Write hello.py"), "planner produces runtime-tracked steps");
+        check(plans.stream().anyMatch(p -> p.optInt("completed") == 1 && p.optInt("percent") == 50), "progress bar reaches 50% after first step's tool succeeds");
+        check(last.getInt("percent") == 100 && !last.getBoolean("active") && r.status.equals("Work recorded · review required"), "progress completes only with evidence");
+        t = new Tools(root); plans.clear();
+        r = new CodingAgent(new Script(call("fail", new JSONObject()), "garbage", done, done, done), t, x -> {}).onPlan(plans::add).execute("x");
+        last = plans.get(plans.size() - 1);
+        check(last.getInt("total") == 2 && last.getInt("completed") == 0 && r.status.equals("Blocked"), "unparseable plan falls back and failed tool never fills the bar");
+        t = new Tools(root);
         r = run(t, "not json");
         check(r.status.equals("Blocked"), "repeated invalid responses stop at step budget");
         t = new Tools(root);

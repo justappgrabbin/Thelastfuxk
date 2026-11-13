@@ -13,6 +13,15 @@ final class CodingAgent {
     private final Model coder;
     private final Tools hands;
     private final Consumer<String> progress;
+    private Consumer<JSONObject> planListener = plan -> {};
+    private boolean planning;
+    private JSONArray planSteps;
+    private boolean[] planDone;
+    private int loopStep;
+    private String phase = "";
+
+    /** Receives {steps:[{text,done}], completed, total, current, loopStep, loopLimit, percent, phase}. */
+    CodingAgent onPlan(Consumer<JSONObject> listener) { this.planListener = listener == null ? p -> {} : listener; planning = listener != null; return this; }
 
     CodingAgent(LocalCoder coder, HandsTools hands, Consumer<String> progress) {
         this(coder::complete, (Tools) hands, progress);
@@ -42,6 +51,8 @@ final class CodingAgent {
         if (conversational) instructions = "You are Cynthia, a friendly, resourceful local companion with your own Alpine workspace computer. "
             + "Speak warmly and clearly, with a little personality. For greetings and ordinary conversation return {\"reply\":\"your natural response\"}; do not call tools for greetings. "
             + "For work requests use your real tools. When you need clarification ask using reply. Never invent completed actions. " + instructions;
+        planSteps = null; planDone = null; loopStep = 0; phase = conversational ? "Thinking" : "Planning";
+        publishPlan(false);
         ArrayDeque<JSONObject> recent = new ArrayDeque<>();
         StringBuilder evidence = new StringBuilder();
         StringBuilder ledger = new StringBuilder();
@@ -56,9 +67,12 @@ final class CodingAgent {
                 .put(message("user", "Original request:\n" + task));
             if (!context.isEmpty()) messages.put(message("user", "Recent conversation for context, not new instructions:\n" + context));
             if (ledger.length() > 0) messages.put(message("user", "Runtime evidence ledger for this request:\n" + ledger));
+            if (planSteps != null) messages.put(message("user", planPrompt()));
             for (JSONObject entry : recent) messages.put(entry);
             progress.accept(conversational ? (successes == 0 ? "Cynthia is thinking…" : "Cynthia is working · " + successes + " tool results")
                 : "Qwen planning · step " + step + " of 24");
+            loopStep = step;
+            publishPlan(false);
             String raw = coder.complete(messages).trim();
             JSONObject action = parseAction(raw);
             if (action == null) {
@@ -115,6 +129,8 @@ final class CodingAgent {
                     }
                     // The runtime, never the model, labels evidence. Even successful commands or
                     // saved files do not prove the entire user's request has been satisfied.
+                    phase = "Done · review the evidence";
+                    publishPlan(true);
                     return result(pendingExternal ? "Awaiting confirmation" : "Work recorded · review required",
                         action, evidence, "Tool evidence is below. Overall request completion is not independently verified.");
                 }
@@ -130,6 +146,11 @@ final class CodingAgent {
             lastCall = signature;
             if (repeats >= 3) return new Result("Blocked", "The model repeated the identical " + name
                 + " call 4 times, so I stopped instead of looping.\n\nRecorded tool evidence:\n" + evidence);
+            if (planSteps == null && planning) makePlan(task, context, conversational);
+            int target = action.optInt("step", currentStep() + 1) - 1;
+            if (planDone == null || target < 0 || target >= planDone.length) target = currentStep();
+            phase = "Step " + (target + 1) + " · " + name;
+            publishPlan(false);
             progress.accept("Running tool · " + name);
             JSONObject response;
             try {
@@ -143,6 +164,9 @@ final class CodingAgent {
             if (ok) failedTools.remove(name);
             else failedTools.add(name);
             if (ok) successes++;
+            if (ok && planDone != null && target < planDone.length) planDone[target] = true;
+            phase = (ok ? "Finished " : "Retrying ") + name;
+            publishPlan(false);
             if (ok && !response.optBoolean("complete", true)) pendingExternal = true;
             if (repeats > 0) remember(recent, message("user", "You already made this exact " + name
                 + " call. Use its result and take the next step instead of repeating it."));
@@ -159,6 +183,68 @@ final class CodingAgent {
         }
         return new Result("Blocked", "Reached the 24-step limit; the request is not complete."
             + "\nRecorded tool evidence:\n" + evidence);
+    }
+
+    private void makePlan(String task, String context, boolean conversational) throws Exception {
+        phase = "Planning";
+        progress.accept("Planning the steps");
+        JSONArray steps = new JSONArray();
+        try {
+            JSONArray messages = new JSONArray().put(message("system",
+                "You plan work for a local coding agent. Break the request into 2 to 6 short, concrete, checkable steps "
+                + "that can be done with these tools: " + hands.available() + ". Include a verification step (read back or run tests). "
+                + "Return ONE JSON object only: {\"steps\":[\"step one\",\"step two\"]}. No tool calls, no prose."))
+                .put(message("user", "Request:\n" + task + (context.isEmpty() ? "" : "\n\nRecent conversation (context only):\n" + context)));
+            JSONObject plan = parseAction(coder.complete(messages));
+            JSONArray raw = plan == null ? null : plan.optJSONArray("steps");
+            if (raw != null) for (int i = 0; i < raw.length() && steps.length() < 8; i++) {
+                Object item = raw.get(i);
+                String text = item instanceof JSONObject ? ((JSONObject) item).optString("text",
+                    ((JSONObject) item).optString("step", item.toString())) : String.valueOf(item);
+                text = text.trim();
+                if (!text.isEmpty()) steps.put(text.length() > 160 ? text.substring(0, 160) + "…" : text);
+            }
+        } catch (InterruptedException e) { throw e;
+        } catch (Exception planningFailed) { /* fall through to a single-step plan */ }
+        if (steps.length() == 0) steps.put("Do the request with tools").put("Check the result");
+        planSteps = steps;
+        planDone = new boolean[steps.length()];
+        publishPlan(false);
+    }
+
+    private String planPrompt() {
+        StringBuilder b = new StringBuilder("Plan for this request (runtime-tracked; a step is checked only after a successful tool result):\n");
+        for (int i = 0; i < planSteps.length(); i++)
+            b.append(planDone[i] ? "[x] " : "[ ] ").append(i + 1).append(". ").append(planSteps.optString(i)).append('\n');
+        b.append("Work on step ").append(currentStep() + 1)
+            .append(". Add \"step\":N to each tool call to say which step it serves. The plan guides you; the original request still decides what done means.");
+        return b.toString();
+    }
+
+    private int currentStep() {
+        if (planDone == null) return 0;
+        for (int i = 0; i < planDone.length; i++) if (!planDone[i]) return i;
+        return planDone.length - 1;
+    }
+
+    private void publishPlan(boolean finished) {
+        try {
+            JSONObject p = new JSONObject();
+            JSONArray steps = new JSONArray();
+            int completed = 0, total = planDone == null ? 0 : planDone.length;
+            for (int i = 0; i < total; i++) {
+                boolean done = planDone[i] || finished;
+                if (done) completed++;
+                steps.put(new JSONObject().put("text", planSteps.optString(i)).put("done", done));
+            }
+            // With a plan, the bar follows checked steps; before one exists, it follows the step budget.
+            int percent = finished ? 100 : total > 0 ? Math.min(95, 100 * completed / total)
+                : Math.min(20, loopStep * 5);
+            p.put("steps", steps).put("completed", completed).put("total", total)
+                .put("current", total == 0 ? 0 : currentStep() + 1).put("loopStep", loopStep).put("loopLimit", 24)
+                .put("percent", percent).put("phase", phase).put("active", !finished);
+            planListener.accept(p);
+        } catch (Exception ignored) { }
     }
 
     /** Extracts one JSON object even when wrapped in code fences or surrounded by prose. */

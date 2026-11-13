@@ -21,6 +21,9 @@ public final class AgentService extends Service {
     static volatile String manualStatus = "";
     static volatile String reply = "";
     static volatile String computerStatus = "Starting computer…";
+    /** Live plan + progress for the current request, read by the WebView. */
+    static volatile String plan = "{}";
+    private Thread weightsWorker;
     private Thread computerWorker;
     private ConversationLog conversations;
     private LocalCoder coder;
@@ -44,7 +47,7 @@ public final class AgentService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (worker != null) { startComputer(); return START_STICKY; }
+        if (worker != null) { startComputer(); startWeightsDownload(); return START_STICKY; }
         running = true;
         status = "Starting";
         startForeground(1, notification(ACTIVE, "The Last Fuck", status, true));
@@ -72,6 +75,7 @@ public final class AgentService extends Service {
             manualWorker.start();
             HandsTools hands = new HandsTools(this, linux);
             startComputer();
+            startWeightsDownload();
             show("Watcher active · waiting for work");
             while (!stopping && !Thread.currentThread().isInterrupted()) {
                 if (computerStatus.startsWith("Linux computer running") && !linux.isResidentAlive()) {
@@ -115,7 +119,7 @@ public final class AgentService extends Service {
                             show("Cynthia is thinking…");
                             CodingAgent.Tools reviewed = reviewedTools(hands);
                             CodingAgent.Result answer = new CodingAgent(coder::complete, reviewed, this::show)
-                                .converse(text, conversationContext());
+                                .onPlan(p -> plan = p.toString()).converse(text, conversationContext());
                             result = answer.output;
                             outcome = answer.status;
                         }
@@ -137,7 +141,7 @@ public final class AgentService extends Service {
                             final String taskTitle = title;
                             CodingAgent.Result agent = new CodingAgent(coder::complete,
                                 reviewedTools(hands, autonomousTask),
-                                phase -> show(taskTitle + " · " + phase)).execute(text);
+                                phase -> show(taskTitle + " · " + phase)).onPlan(p -> plan = p.toString()).execute(text);
                             outcome = agent.status;
                             result = agent.output;
                         }
@@ -150,6 +154,8 @@ public final class AgentService extends Service {
                 } finally {
                     if (wake.isHeld()) wake.release();
                 }
+                try { JSONObject p = new JSONObject(plan); if (p.optBoolean("active")) plan = p.put("active", false).put("phase", outcome).toString(); }
+                catch (Exception ignored) { }
                 // Persist each outcome before sending its notification.
                 boolean interrupted = Thread.interrupted();
                 queue.finish(task, outcome, title, result);
@@ -182,6 +188,21 @@ public final class AgentService extends Service {
             if (locked) WORKER_LOCK.unlock();
             if (!stopping) stopSelf();
         }
+    }
+
+    /** Fetches Qwen weights as soon as the app starts so the first message doesn't wait on 1.12 GB. */
+    synchronized void startWeightsDownload() {
+        if (stopping || coder == null || LocalCoder.weightsReady || (weightsWorker != null && weightsWorker.isAlive())) return;
+        weightsWorker = new Thread(() -> {
+            try { coder.ensureModel(); show("Qwen weights ready · watcher waiting for work"); }
+            catch (Exception e) {
+                if (!stopping) {
+                    LocalCoder.weightsStatus = "Weights download paused · " + e.getMessage() + " · tap Download weights to resume";
+                    event("Qwen weights not ready", LocalCoder.weightsStatus);
+                }
+            }
+        }, "qwen-weights");
+        weightsWorker.start();
     }
 
     private synchronized void startComputer() {
@@ -354,6 +375,7 @@ public final class AgentService extends Service {
         stopping = true;
         ActionReview.decide(false);
         if (computerWorker != null) computerWorker.interrupt();
+        if (weightsWorker != null) weightsWorker.interrupt();
         computerStatus = "Computer stopped";
         running = false;
         if (coder != null) coder.close();
