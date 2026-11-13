@@ -84,7 +84,12 @@ public final class MainActivity extends Activity {
             try {
                 org.json.JSONObject value=new org.json.JSONObject().put("status",AgentService.status)
                     .put("running",AgentService.running).put("computer",AgentService.computerStatus)
-                    .put("autonomy",settings.getBoolean("autonomy",false)).put("review",ActionReview.pending)
+                    .put("autonomy",settings.getBoolean("autonomy",false))
+                    .put("autonomyGoal",settings.getString("autonomy_goal",""))
+                    .put("autonomyStatus",settings.getString("autonomy_status","No goal saved"))
+                    .put("autonomyCycles",settings.getInt("autonomy_cycles",0))
+                    .put("autonomyLimit",AutonomyPolicy.MAX_CYCLES)
+                    .put("review",ActionReview.pending)
                     .put("manual",AgentService.manualStatus).put("history",queue.history())
                     .put("messages",new ConversationLog(getFilesDir()).tail(100));
                 return value.toString();
@@ -114,9 +119,45 @@ public final class MainActivity extends Activity {
             } catch(Exception e) { return error(e); }
         }
         @android.webkit.JavascriptInterface public void autonomy(boolean enabled) {
-            settings.edit().putBoolean("autonomy",enabled).apply();
-            // Enabling autonomy also releases a currently displayed action approval.
-            if(enabled) ActionReview.decide(true);
+            if (enabled && settings.getString("autonomy_goal", "").trim().isEmpty()) {
+                settings.edit().putBoolean("autonomy", false)
+                    .putString("autonomy_status", "Set a goal before enabling autonomy").commit();
+                return;
+            }
+            settings.edit().putBoolean("autonomy", enabled)
+                .putString("autonomy_status", enabled ? "Autonomy enabled · waiting for watcher"
+                    : "Autonomy paused by user").commit();
+            if (enabled) {
+                runOnUiThread(() -> { if (!AgentService.running) startAgent(); });
+                ActionReview.decide(true);
+            }
+        }
+        @android.webkit.JavascriptInterface public String saveGoal(String goal) {
+            try {
+                String clean = goal == null ? "" : goal.trim();
+                if (clean.isEmpty() || clean.length() > 1200)
+                    throw new IllegalArgumentException("Goal must contain 1–1200 characters");
+                if (!clean.equals(settings.getString("autonomy_goal", ""))) {
+                    settings.edit().putString("autonomy_goal", clean)
+                        .putString("autonomy_session", java.util.UUID.randomUUID().toString())
+                        .putBoolean("autonomy", false).putInt("autonomy_cycles", 0)
+                        .putLong("autonomy_next_at", 0L).putString("autonomy_last", "")
+                        .putString("autonomy_status", "Goal saved · enable autonomy to begin").commit();
+                }
+                return new org.json.JSONObject().put("saved", true)
+                    .put("status", settings.getString("autonomy_status", "")).toString();
+            } catch (Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public String resetGoal() {
+            try {
+                if (settings.getString("autonomy_goal", "").trim().isEmpty())
+                    throw new IllegalArgumentException("Save a goal first");
+                settings.edit().putString("autonomy_session", java.util.UUID.randomUUID().toString())
+                    .putBoolean("autonomy", false).putInt("autonomy_cycles", 0)
+                    .putLong("autonomy_next_at", 0L).putString("autonomy_last", "")
+                    .putString("autonomy_status", "Goal reset · enable autonomy to restart").commit();
+                return new org.json.JSONObject().put("reset", true).toString();
+            } catch (Exception e) { return error(e); }
         }
         @android.webkit.JavascriptInterface public void review(boolean allow) { ActionReview.decide(allow); }
         @android.webkit.JavascriptInterface public void control(String action) {
@@ -169,6 +210,7 @@ public final class MainActivity extends Activity {
         page.addView(task, new LinearLayout.LayoutParams(-1, -2));
         button(page, "Send request", () -> enqueue("agent", task.getText().toString(), true));
         button(page, "Chat only (no actions)", () -> enqueue("chat", task.getText().toString(), true));
+        button(page, "Set autonomous goal", this::editAutonomyGoal);
         label(page, "Send request uses tools. Results include evidence and remain open for your review.", 13);
         reply = label(page, "Replies appear here.", 16);
         reply.setTextIsSelectable(true);
@@ -327,13 +369,25 @@ public final class MainActivity extends Activity {
         phone.setChecked(settings.getBoolean("phone_hands", false));
         content.addView(phone);
         CheckBox autonomy = new CheckBox(this);
-        autonomy.setText("Autonomy: continue queued work without reviewing each action");
+        autonomy.setText("Autonomy: work toward a saved goal (3 bounded cycles, 10-minute cooldown)");
         autonomy.setChecked(settings.getBoolean("autonomy", false));
         autonomy.setOnCheckedChangeListener((view, enabled) -> {
-            settings.edit().putBoolean("autonomy", enabled).apply();
-            if(enabled) ActionReview.decide(true);
+            if (enabled && settings.getString("autonomy_goal", "").trim().isEmpty()) {
+                autonomy.setChecked(false);
+                Toast.makeText(this, "Save an autonomy goal first", Toast.LENGTH_LONG).show();
+                return;
+            }
+            settings.edit().putBoolean("autonomy", enabled).commit();
+            if (enabled) {
+                if (!AgentService.running) startAgent();
+                ActionReview.decide(true);
+            }
         });
         content.addView(autonomy);
+        button(content, "Set autonomous goal", this::editAutonomyGoal);
+        label(content, "Autonomous cycles can inspect, create and append workspace files. "
+            + "Shell commands, Tasker and phone Hands are not available to unattended goal cycles. "
+            + "Pauses after 3 cycles or on blocked work.", 13);
         button(content, "Android accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         EditText tasker = new EditText(this);
         tasker.setMinLines(2);
@@ -365,6 +419,28 @@ public final class MainActivity extends Activity {
                 save(shell, phone, tasker);
                 requestTaskerAccess(true);
             }).setPositiveButton("Save", (dialog, button) -> save(shell, phone, tasker)).show();
+    }
+
+    private void editAutonomyGoal() {
+        EditText goal = new EditText(this);
+        goal.setMinLines(4);
+        goal.setMaxLines(9);
+        goal.setHint("Describe what Cynthia should progressively build or investigate");
+        goal.setText(settings.getString("autonomy_goal", ""));
+        new AlertDialog.Builder(this).setTitle("Autonomy goal")
+            .setMessage("Save the goal here, then enable autonomy in the top switch or Hands settings. "
+                + "This does not give unattended control of the phone or shell.")
+            .setView(goal).setNegativeButton("Cancel", null)
+            .setPositiveButton("Save goal", (dialog, which) -> {
+                try {
+                    org.json.JSONObject result = new org.json.JSONObject(
+                        new DesktopBridge().saveGoal(goal.getText().toString()));
+                    if (result.has("error")) throw new IllegalArgumentException(result.getString("error"));
+                    Toast.makeText(this, "Goal saved · enable autonomy to start", Toast.LENGTH_LONG).show();
+                } catch (Exception e) {
+                    Toast.makeText(this, "Could not save goal: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            }).show();
     }
 
     private boolean pendingTaskerTest;
