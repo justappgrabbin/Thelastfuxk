@@ -1,0 +1,431 @@
+package app.lastfuck;
+
+import android.app.*;
+import android.content.*;
+import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.os.*;
+import android.provider.Settings;
+import android.view.ViewGroup;
+import android.widget.*;
+
+public final class MainActivity extends Activity {
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private TextView status;
+    private TextView history;
+    private TextView reply;
+    private TextView consoleStatus;
+    private EditText task;
+    private TaskQueue queue;
+    private SharedPreferences settings;
+
+    private final Runnable refresh = new Runnable() {
+        @Override public void run() {
+            if (web != null) {
+                web.evaluateJavascript("window.refreshCynthia && window.refreshCynthia()",null);
+                handler.postDelayed(this,1500);
+                return;
+            }
+            if (status == null) { handler.postDelayed(this,1500); return; }
+            status.setText(AgentService.status);
+            String latestReply = AgentService.reply;
+            if (!latestReply.isEmpty() && !latestReply.contentEquals(reply.getText())) reply.setText(latestReply);
+            consoleStatus.setText(AgentService.manualStatus);
+            try {
+                String latest = queue.history();
+                if (!latest.contentEquals(history.getText())) history.setText(latest);
+            } catch (Exception e) {
+                history.setText("Could not read task history · " + e.getMessage());
+            }
+            handler.postDelayed(this, 1500);
+        }
+    };
+
+    private android.webkit.WebView web;
+
+    @Override protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        queue = new TaskQueue(this);
+        settings = getSharedPreferences("agent", 0);
+        if (state != null) exportPath = state.getString("exportPath");
+        getWindow().setStatusBarColor(Color.rgb(17,20,28));
+        getWindow().setNavigationBarColor(Color.rgb(17,20,28));
+        getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        web = new android.webkit.WebView(this);
+        web.setBackgroundColor(Color.rgb(17,20,28));
+        web.getSettings().setJavaScriptEnabled(true);
+        web.getSettings().setDomStorageEnabled(true);
+        web.getSettings().setAllowFileAccess(false);
+        web.getSettings().setAllowContentAccess(false);
+        web.getSettings().setAllowFileAccessFromFileURLs(false);
+        web.getSettings().setAllowUniversalAccessFromFileURLs(false);
+        web.addJavascriptInterface(new DesktopBridge(), "Cynthia");
+        web.setWebViewClient(new android.webkit.WebViewClient() {
+            @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return true; }
+            @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
+                String scheme=request.getUrl().getScheme();
+                if ("https".equals(scheme)||"http".equals(scheme)||"file".equals(scheme)||"content".equals(scheme))
+                    return new android.webkit.WebResourceResponse("text/plain","UTF-8",new java.io.ByteArrayInputStream(new byte[0]));
+                return null;
+            }
+        });
+        setContentView(web);
+        try {
+            String html=RuntimeFiles.read(getAssets().open("computer.html"),512*1024);
+            web.loadDataWithBaseURL("https://cynthia.local/", html, "text/html", "UTF-8", null);
+        } catch(Exception e) { showClassic(state); }
+        startAgent();
+    }
+
+    public final class DesktopBridge {
+        private String error(Exception e) { try { return new org.json.JSONObject().put("error",String.valueOf(e.getMessage())).toString(); } catch(Exception ignored) { return "{}"; } }
+        @android.webkit.JavascriptInterface public String state() {
+            try {
+                org.json.JSONObject value=new org.json.JSONObject().put("status",AgentService.status)
+                    .put("running",AgentService.running).put("computer",AgentService.computerStatus)
+                    .put("autonomy",settings.getBoolean("autonomy",false)).put("review",ActionReview.pending)
+                    .put("manual",AgentService.manualStatus).put("history",queue.history())
+                    .put("messages",new ConversationLog(getFilesDir()).tail(100));
+                return value.toString();
+            } catch(Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public String send(String text, String mode) {
+            try {
+                String kind="agent".equals(mode)?"agent":"chat".equals(mode)?"chat":"assistant";
+                String id=queue.enqueue(kind,text);
+                runOnUiThread(()->{ if(!AgentService.running) startAgent(); });
+                return new org.json.JSONObject().put("id",id).toString();
+            } catch(Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public String files(String path) {
+            try { return new WorkspaceBrowser(new java.io.File(getFilesDir(),"workspace")).list(path).toString(); }
+            catch(Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public String preview(String path) {
+            try { return new WorkspaceBrowser(new java.io.File(getFilesDir(),"workspace")).preview(path).toString(); }
+            catch(Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public String terminal(String command, boolean androidShell) {
+            try {
+                String id=queue.enqueue(androidShell?"android-shell":"shell",command);
+                runOnUiThread(()->{ if(!AgentService.running) startAgent(); });
+                return new org.json.JSONObject().put("id",id).toString();
+            } catch(Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public void autonomy(boolean enabled) {
+            settings.edit().putBoolean("autonomy",enabled).apply();
+            // Enabling autonomy also releases a currently displayed action approval.
+            if(enabled) ActionReview.decide(true);
+        }
+        @android.webkit.JavascriptInterface public void review(boolean allow) { ActionReview.decide(allow); }
+        @android.webkit.JavascriptInterface public void control(String action) {
+            runOnUiThread(()-> {
+                switch(action) {
+                    case "settings": configuration(); break;
+                    case "import": pickFile(false); break;
+                    case "export": pickFile(true); break;
+                    case "classic": showClassic(null); break;
+                    case "start": startAgent(); break;
+                    case "stop": stopService(new Intent(MainActivity.this,AgentService.class)); break;
+                    case "console": console(); break;
+                }
+            });
+        }
+    }
+
+    private void showClassic(Bundle state) {
+        web = null;
+        if (state != null) exportPath = state.getString("exportPath");
+        queue = new TaskQueue(this);
+        settings = getSharedPreferences("agent", 0);
+        getWindow().setStatusBarColor(Color.rgb(17, 20, 26));
+        getWindow().setNavigationBarColor(Color.rgb(17, 20, 26));
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(dp(20), dp(18), dp(20), dp(32));
+        page.setBackgroundColor(Color.rgb(17, 20, 26));
+        scroll.addView(page);
+        setContentView(scroll);
+
+        button(page, "Back to Cynthia’s chat", () -> recreate());
+        label(page, "LOCAL AGENT  /  ARM64", 13).setTextColor(Color.rgb(125, 220, 205));
+        label(page, "The Last Fuck", 34).setTypeface(Typeface.DEFAULT_BOLD);
+        label(page, "Qwen Coder · Alpine Linux · Synthia Hands", 14);
+        status = label(page, AgentService.status, 16);
+        status.setPadding(0, dp(12), 0, dp(6));
+        LinearLayout controls = new LinearLayout(this);
+        page.addView(controls);
+        button(controls, "Start watcher", this::startAgent).setBackgroundTintList(ColorStateList.valueOf(Color.rgb(29, 100, 92)));
+        button(controls, "Stop", () -> stopService(new Intent(this, AgentService.class)));
+
+        label(page, "Talk to the agent", 22).setTypeface(Typeface.DEFAULT_BOLD);
+        task = new EditText(this);
+        task.setHint("Type a message or coding task");
+        task.setMinLines(3);
+        task.setGravity(android.view.Gravity.TOP);
+        page.addView(task, new LinearLayout.LayoutParams(-1, -2));
+        button(page, "Send request", () -> enqueue("agent", task.getText().toString(), true));
+        button(page, "Chat only (no actions)", () -> enqueue("chat", task.getText().toString(), true));
+        label(page, "Send request uses tools. Results include evidence and remain open for your review.", 13);
+        reply = label(page, "Replies appear here.", 16);
+        reply.setTextIsSelectable(true);
+        label(page, "Workspace tools", 22).setTypeface(Typeface.DEFAULT_BOLD);
+        consoleStatus = label(page, "", 14);
+        button(page, "Linux console", this::console);
+        button(page, "Import file to workspace", () -> pickFile(false));
+        button(page, "Export workspace file", () -> pickFile(true));
+        button(page, "Hands & Tasker", this::configuration);
+        label(page, "Recent activity", 22).setTypeface(Typeface.DEFAULT_BOLD);
+        history = label(page, "", 14);
+        history.setTypeface(Typeface.MONOSPACE);
+        history.setTextIsSelectable(true);
+    }
+
+    private void startAgent() {
+        startForegroundService(new Intent(this, AgentService.class));
+    }
+
+    private void enqueue(String kind, String text, boolean clearTask) {
+        try {
+            String queuedId=queue.enqueue(kind, text);
+            if (clearTask) task.setText("");
+            if ("chat".equals(kind)) AgentService.reply = "Message queued…";
+            if (!AgentService.running) startAgent();
+            Toast.makeText(this, "chat".equals(kind) ? "Message queued" : "Task queued", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            new AlertDialog.Builder(this).setTitle("Could not queue task").setMessage(e.getMessage())
+                .setPositiveButton("OK", null).show();
+        }
+    }
+
+    private void console() {
+        EditText command = new EditText(this);
+        command.setHint("git status");
+        command.setTypeface(Typeface.MONOSPACE);
+        command.setMinLines(3);
+        new AlertDialog.Builder(this).setTitle("Alpine Linux console")
+            .setMessage("Runs inside this app. See output in Recent activity. First use sets up Alpine automatically.")
+            .setView(command).setNegativeButton("Cancel", null)
+            .setNeutralButton("Android shell", (dialog, button) -> enqueue("android-shell", command.getText().toString(), false))
+            .setPositiveButton("Run in Alpine", (dialog, button) -> enqueue("shell", command.getText().toString(), false)).show();
+    }
+
+    private static final int IMPORT = 81;
+    private static final int EXPORT = 82;
+    private static final int IMPORT_MODEL = 83;
+    private String exportPath;
+
+    private void pickFile(boolean export) {
+        if (!export) {
+            startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), IMPORT);
+            return;
+        }
+        EditText path = new EditText(this);
+        path.setSingleLine(true);
+        path.setHint("Relative path, e.g. result.py");
+        new AlertDialog.Builder(this).setTitle("Export workspace file").setView(path)
+            .setNegativeButton("Cancel", null).setPositiveButton("Choose destination", (d, b) -> {
+                exportPath = path.getText().toString().trim();
+                try {
+                    java.io.File source = workspacePath(exportPath);
+                    if (!source.isFile()) throw new java.io.IOException("Workspace file does not exist");
+                    startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                        .addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream")
+                        .putExtra(Intent.EXTRA_TITLE, source.getName()), EXPORT);
+                } catch (Exception e) {
+                    Toast.makeText(this, e.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            }).show();
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        state.putString("exportPath", exportPath);
+        super.onSaveInstanceState(state);
+    }
+
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if ((request != IMPORT && request != EXPORT && request != IMPORT_MODEL) || result != RESULT_OK || data == null || data.getData() == null)
+            return;
+        if (request == IMPORT_MODEL) {
+            Toast.makeText(this, "Verifying Qwen model file", Toast.LENGTH_LONG).show();
+        }
+        final String sourcePath = exportPath;
+        android.net.Uri uri = data.getData();
+        new Thread(() -> {
+            String message;
+            try {
+                if (request == IMPORT_MODEL) {
+                    LocalCoder.importModel(getApplicationContext(), uri);
+                    message = "Qwen installed. Press Start agent.";
+                } else if (request == IMPORT) {
+                    String name = null;
+                    try (android.database.Cursor cursor = getContentResolver().query(uri,
+                        new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                        if (cursor != null && cursor.moveToFirst()) name = cursor.getString(0);
+                    }
+                    if (name == null || name.isEmpty() || name.contains("/") || ".".equals(name) || "..".equals(name))
+                        throw new java.io.IOException("Invalid document name");
+                    java.io.File file = workspacePath(name);
+                    java.nio.file.Files.createDirectories(file.getParentFile().toPath());
+                    java.io.File stage = java.io.File.createTempFile("import", ".tmp", file.getParentFile());
+                    try {
+                        try (java.io.InputStream in = getContentResolver().openInputStream(uri);
+                             java.io.FileOutputStream out = new java.io.FileOutputStream(stage)) {
+                            copy(in, out);
+                        }
+                        java.nio.file.Files.move(stage.toPath(), file.toPath());
+                    } finally {
+                        stage.delete();
+                    }
+                    message = "Imported /workspace/" + name;
+                } else {
+                    java.io.File file = workspacePath(sourcePath);
+                    try (java.io.InputStream in = new java.io.FileInputStream(file);
+                         java.io.OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+                        copy(in, out);
+                    }
+                    message = "Exported " + file.getName();
+                }
+            } catch (Exception e) {
+                message = "File transfer failed · " + e.getMessage();
+            }
+            String notice = message;
+            runOnUiThread(() -> Toast.makeText(this, notice, Toast.LENGTH_LONG).show());
+        }, "workspace-transfer").start();
+    }
+
+    private java.io.File workspacePath(String path) throws java.io.IOException {
+        if (path == null || path.isEmpty() || path.startsWith("/")) throw new java.io.IOException("Use a relative file path");
+        java.io.File root = new java.io.File(getFilesDir(), "workspace").getCanonicalFile();
+        java.io.File file = new java.io.File(root, path).getCanonicalFile();
+        if (file.equals(root) || !file.toPath().startsWith(root.toPath())) throw new java.io.IOException("Path outside workspace");
+        return file;
+    }
+
+    private static void copy(java.io.InputStream in, java.io.OutputStream out) throws java.io.IOException {
+        if (in == null || out == null) throw new java.io.IOException("Android could not open the document");
+        byte[] buffer = new byte[32768];
+        for (int n; (n = in.read(buffer)) != -1;) out.write(buffer, 0, n);
+    }
+
+    private void configuration() {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(22), 0, dp(22), 0);
+        CheckBox shell = new CheckBox(this);
+        shell.setText("Let the agent run Linux and Android shell commands");
+        shell.setChecked(settings.getBoolean("shell", false));
+        content.addView(shell);
+        label(content, "Enable for trusted workspaces. Linux commands run with the app’s Android identity.", 13);
+        CheckBox phone = new CheckBox(this);
+        phone.setText("Let the agent use phone Hands");
+        phone.setChecked(settings.getBoolean("phone_hands", false));
+        content.addView(phone);
+        CheckBox autonomy = new CheckBox(this);
+        autonomy.setText("Autonomy: continue queued work without reviewing each action");
+        autonomy.setChecked(settings.getBoolean("autonomy", false));
+        autonomy.setOnCheckedChangeListener((view, enabled) -> {
+            settings.edit().putBoolean("autonomy", enabled).apply();
+            if(enabled) ActionReview.decide(true);
+        });
+        content.addView(autonomy);
+        button(content, "Android accessibility settings", () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        EditText tasker = new EditText(this);
+        tasker.setMinLines(2);
+        tasker.setHint("Allowed Tasker task names, one per line");
+        tasker.setText(settings.getString("tasker_task", ""));
+        content.addView(tasker);
+        label(content, "Tasker: Preferences → Misc → Allow External Access. Add existing task names above; the agent can run them and pass %par1 / %par2.", 13);
+        button(content, "Open Tasker", () -> {
+            String installed = TaskerBridge.installedPackage(this);
+            Intent launch = installed == null ? null : getPackageManager().getLaunchIntentForPackage(installed);
+            if (launch != null) startActivity(launch);
+            else Toast.makeText(this, "Install Tasker first.", Toast.LENGTH_LONG).show();
+        });
+        button(content, "Enable Tasker access", () -> requestTaskerAccess(false));
+        button(content, "Show Tasker inbox setup", this::taskerSetup);
+        button(content, "Import Qwen GGUF for offline setup", () -> {
+            if (AgentService.running) {
+                Toast.makeText(this, "Stop the agent before importing weights.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), IMPORT_MODEL);
+        });
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(content);
+        new AlertDialog.Builder(this).setTitle("Hands & Tasker").setView(scroll)
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Save & test Tasker", (dialog, button) -> {
+                save(shell, phone, tasker);
+                requestTaskerAccess(true);
+            }).setPositiveButton("Save", (dialog, button) -> save(shell, phone, tasker)).show();
+    }
+
+    private boolean pendingTaskerTest;
+    private static final int TASKER_PERMISSION = 84;
+
+    private void requestTaskerAccess(boolean test) {
+        if (checkSelfPermission(TaskerBridge.PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            if (test) enqueue("tasker", "Tasker test", false);
+            else Toast.makeText(this, "Tasker permission granted. Enable Allow External Access inside Tasker too.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        pendingTaskerTest = test;
+        requestPermissions(new String[]{TaskerBridge.PERMISSION}, TASKER_PERMISSION);
+    }
+
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request != TASKER_PERMISSION) return;
+        boolean granted = results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        if (granted && pendingTaskerTest) enqueue("tasker", "Tasker test", false);
+        else Toast.makeText(this, granted ? "Tasker permission granted."
+            : "Tasker access needs your permission. Open Tasker, enable Allow External Access and allow this app; then retry.", Toast.LENGTH_LONG).show();
+        pendingTaskerTest = false;
+    }
+
+    private void save(CheckBox shell, CheckBox phone, EditText tasker) {
+        settings.edit().putBoolean("shell", shell.isChecked()).putBoolean("phone_hands", phone.isChecked())
+            .putString("tasker_task", tasker.getText().toString().trim()).apply();
+    }
+
+    private void taskerSetup() {
+        String token = TaskerInbox.token(this);
+        TextView details = new TextView(this);
+        details.setPadding(dp(20), 0, dp(20), 0);
+        details.setTextIsSelectable(true);
+        details.setText("Tasker Send Intent\nAction app.lastfuck.QUEUE_TASK\nPackage " + getPackageName() + "\n"
+            + "Class app.lastfuck.TaskerInbox\nTarget Broadcast Receiver\n\n"
+            + "Extra 1: token:" + token + "\nExtra 2: task:<your task>\n\n"
+            + "For outgoing tasks, allow external access in Tasker and enter the exact task name here.");
+        new AlertDialog.Builder(this).setTitle("Tasker inbox").setView(details).setPositiveButton("Close", null).show();
+    }
+
+    private TextView label(LinearLayout parent, String text, int size) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(size);
+        parent.addView(view, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, -2));
+        return view;
+    }
+
+    private Button button(LinearLayout parent, String text, Runnable action) {
+        Button view = new Button(this);
+        view.setAllCaps(false);
+        view.setText(text);
+        view.setOnClickListener(v -> action.run());
+        parent.addView(view);
+        return view;
+    }
+
+    private int dp(int size) { return Math.round(size * getResources().getDisplayMetrics().density); }
+
+    @Override protected void onResume() { super.onResume(); handler.post(refresh); }
+    @Override protected void onPause() { handler.removeCallbacks(refresh); super.onPause(); }
+}

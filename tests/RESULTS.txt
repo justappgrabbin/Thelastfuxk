@@ -1,0 +1,43 @@
+PASS immediate done without tools is blocked
+PASS rejected claim is retained in evidence
+PASS failed tool cannot become completed
+PASS agent executes actual file write and read
+PASS successful tool work does not auto-approve task
+PASS file evidence contains read-back and checksum
+PASS failed tests block a later done claim
+PASS external dispatch stays unconfirmed
+PASS invalid JSON recovers without fake execution
+PASS repeated invalid responses stop at step budget
+PASS unrelated successful listing cannot hide a failed test
+PASS append preserves existing contents
+PASS workspace traversal is rejected
+PASS symlink escape is rejected
+PASS directory pagination exposes every entry
+PASS Tasker supports multiple configured tasks without duplicates
+PASS agent can select a configured Tasker task by name
+PASS legacy default Tasker task remains supported
+PASS unconfigured Tasker task is rejected with guidance
+19 regression checks passed
+PASS dispatch targets installed Play Store Tasker
+PASS Tasker action uses official constant
+PASS dispatch preserves selected task name
+PASS parameters use official TaskerIntent wire format
+PASS broadcast dispatch is not reported as task completion
+PASS direct-purchase Tasker is supported
+PASS missing Android permission prevents dispatch
+PASS missing receiver prevents false success
+8 Tasker bridge checks passed (host Android doubles; no phone dispatch)
+PASS chat survives a new log instance
+PASS history tail returns newest conversation
+PASS damaged history row does not hide saved chat
+PASS workspace browser lists real folders
+PASS saved HTML is available for preview
+PASS preview reflects actual saved bytes
+PASS image preview encodes local bytes
+PASS file preview cannot read outside workspace
+PASS file preview cannot escape through symlinks
+PASS autonomy-off action waits for explicit review
+PASS approval releases action and clears prompt
+PASS declined action does not proceed
+PASS conversational reply bypasses task completion loop
+13 computer/chat/review checks passed
