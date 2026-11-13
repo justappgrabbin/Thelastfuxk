@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_description">Lets the MCP server inside The Last Fuck read the screen and perform taps, swipes and typing when an MCP client you authorized asks. Inert until you start the server.</string>
+</resources>

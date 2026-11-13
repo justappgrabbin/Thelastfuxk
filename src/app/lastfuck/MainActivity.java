@@ -93,6 +93,7 @@ public final class MainActivity extends Activity {
                     .put("plan",new org.json.JSONObject(AgentService.plan))
                     .put("weights",LocalCoder.weightsStatus).put("weightsPercent",LocalCoder.weightsPercent)
                     .put("weightsReady",LocalCoder.weightsReady)
+                    .put("lastOutput",AgentService.lastOutput).put("klein",AgentService.kleinStatus)
                     .put("manual",AgentService.manualStatus).put("history",queue.history())
                     .put("messages",new ConversationLog(getFilesDir()).tail(100));
                 return value.toString();
@@ -160,6 +161,52 @@ public final class MainActivity extends Activity {
                     .putString("autonomy_status", "Goal reset · enable autonomy to restart").commit();
                 return new org.json.JSONObject().put("reset", true).toString();
             } catch (Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public String settings() {
+            try {
+                return new org.json.JSONObject()
+                    .put("kleinOn",settings.getBoolean("klein_on",true))
+                    .put("kleinUrl",settings.getString("klein_url",KleinClient.DEFAULT_URL))
+                    .put("kleinToken",!settings.getString("klein_token","").isEmpty())
+                    .put("proactive",settings.getBoolean("qwen_proactive",true))
+                    .put("mcp",org.mobilemcp.ondevice.McpControl.status(MainActivity.this)).toString();
+            } catch(Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public String saveSettings(String json) {
+            try {
+                org.json.JSONObject v=new org.json.JSONObject(json);
+                android.content.SharedPreferences.Editor e=settings.edit();
+                if(v.has("kleinOn")) e.putBoolean("klein_on",v.getBoolean("kleinOn"));
+                if(v.has("kleinUrl")) e.putString("klein_url",KleinClient.normalize(v.getString("kleinUrl")));
+                if(v.has("kleinToken")) e.putString("klein_token",v.getString("kleinToken").trim());
+                if(v.has("proactive")) e.putBoolean("qwen_proactive",v.getBoolean("proactive"));
+                e.commit();
+                return settings();
+            } catch(Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public String testKlein() {
+            try {
+                KleinClient.Reply r=KleinClient.chat(settings.getString("klein_url",KleinClient.DEFAULT_URL),"hello",settings.getString("klein_token",""));
+                AgentService.kleinStatus="Klein connected · "+settings.getString("klein_url",KleinClient.DEFAULT_URL);
+                return new org.json.JSONObject().put("ok",true).put("reply",r.text).toString();
+            } catch(Exception e) { AgentService.kleinStatus="Klein unreachable · "+e.getMessage(); return error(e); }
+        }
+        @android.webkit.JavascriptInterface public String mcp(String action) {
+            try {
+                switch(action) {
+                    case "start": org.mobilemcp.ondevice.McpControl.start(); break;
+                    case "stop": org.mobilemcp.ondevice.McpControl.stop(); break;
+                    case "remoteOn": org.mobilemcp.ondevice.McpControl.setRemote(MainActivity.this,true); break;
+                    case "remoteOff": org.mobilemcp.ondevice.McpControl.setRemote(MainActivity.this,false); break;
+                    case "rotate": org.mobilemcp.ondevice.McpControl.rotate(MainActivity.this); break;
+                    case "forget": org.mobilemcp.ondevice.McpControl.forgetWorkspace(MainActivity.this); break;
+                    case "folder": runOnUiThread(()->startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION),MCP_FOLDER)); break;
+                    case "accessibility": runOnUiThread(()->startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))); break;
+                    default: throw new IllegalArgumentException("Unknown MCP action");
+                }
+                return org.mobilemcp.ondevice.McpControl.status(MainActivity.this).toString();
+            } catch(Exception e) { return error(e); }
         }
         @android.webkit.JavascriptInterface public void review(boolean allow) { ActionReview.decide(allow); }
         @android.webkit.JavascriptInterface public void control(String action) {
@@ -292,8 +339,17 @@ public final class MainActivity extends Activity {
         super.onSaveInstanceState(state);
     }
 
+    private static final int MCP_FOLDER = 7731;
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == MCP_FOLDER) {
+            if (result == RESULT_OK && data != null && data.getData() != null) {
+                getContentResolver().takePersistableUriPermission(data.getData(),
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                org.mobilemcp.ondevice.McpControl.selectWorkspace(this, data.getData());
+            }
+            return;
+        }
         if ((request != IMPORT && request != EXPORT && request != IMPORT_MODEL) || result != RESULT_OK || data == null || data.getData() == null)
             return;
         if (request == IMPORT_MODEL) {

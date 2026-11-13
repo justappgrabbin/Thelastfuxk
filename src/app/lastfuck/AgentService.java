@@ -23,6 +23,9 @@ public final class AgentService extends Service {
     static volatile String computerStatus = "Starting computer…";
     /** Live plan + progress for the current request, read by the WebView. */
     static volatile String plan = "{}";
+    /** Last workspace file Qwen wrote, for the preview bar. */
+    static volatile String lastOutput = "";
+    static volatile String kleinStatus = "Klein not contacted yet";
     private Thread weightsWorker;
     private Thread computerWorker;
     private ConversationLog conversations;
@@ -110,18 +113,40 @@ public final class AgentService extends Service {
                         getSharedPreferences("agent", 0).getString("autonomy_goal", ""), 80);
                     show("Working · " + title);
                     if ("assistant".equals(kind)) {
-                        String normalized = text.trim().toLowerCase(java.util.Locale.ROOT).replaceAll("[!?.]+$", "");
-                        if (java.util.Arrays.asList("hi", "hello", "hey", "hello cynthia", "hi cynthia").contains(normalized)) {
-                            result = "Hey, I’m here. What are we making today? You can chat with me, ask me to work, or open my computer below.";
-                            outcome = "Interface greeting";
+                        android.content.SharedPreferences prefs = getSharedPreferences("agent", 0);
+                        KleinClient.Reply klein = null;
+                        if (prefs.getBoolean("klein_on", true)) {
+                            show("Klein is listening…");
+                            try {
+                                klein = KleinClient.chat(prefs.getString("klein_url", KleinClient.DEFAULT_URL), text,
+                                    prefs.getString("klein_token", ""));
+                                kleinStatus = "Klein connected · " + KleinClient.normalize(prefs.getString("klein_url", KleinClient.DEFAULT_URL));
+                            } catch (Exception e) {
+                                kleinStatus = "Klein unreachable · " + e.getMessage();
+                            }
+                        }
+                        if (klein != null) {
+                            result = klein.text;
+                            outcome = "Klein";
+                            if (prefs.getBoolean("qwen_proactive", true)) {
+                                String handoff = proactiveHandoff(queue, text, klein.text);
+                                if (!handoff.isEmpty()) { result += "\n\n" + handoff; outcome = "Klein · Qwen started work"; }
+                            }
                         } else {
-                            coder.start();
-                            show("Cynthia is thinking…");
-                            CodingAgent.Tools reviewed = reviewedTools(hands);
-                            CodingAgent.Result answer = new CodingAgent(coder::complete, reviewed, this::show)
-                                .onPlan(p -> plan = p.toString()).converse(text, conversationContext());
-                            result = answer.output;
-                            outcome = answer.status;
+                            String normalized = text.trim().toLowerCase(java.util.Locale.ROOT).replaceAll("[!?.]+$", "");
+                            String note = prefs.getBoolean("klein_on", true) ? "(Klein is offline, so Qwen answered · " + kleinStatus + ")\n" : "";
+                            if (java.util.Arrays.asList("hi", "hello", "hey", "hello cynthia", "hi cynthia").contains(normalized)) {
+                                result = note + "Hey, I’m here. What are we making today? You can chat with me, ask me to work, or open my computer below.";
+                                outcome = "Interface greeting";
+                            } else {
+                                coder.start();
+                                show("Cynthia is thinking…");
+                                CodingAgent.Tools reviewed = reviewedTools(hands);
+                                CodingAgent.Result answer = new CodingAgent(coder::complete, reviewed, this::show)
+                                    .onPlan(p -> plan = p.toString()).converse(text, conversationContext());
+                                result = note + answer.output;
+                                outcome = answer.status;
+                            }
                         }
                         reply = result;
                     } else if ("chat".equals(kind)) {
@@ -137,11 +162,13 @@ public final class AgentService extends Service {
                             outcome = "Paused";
                             result = "Autonomous goal changed or was switched off before execution.";
                         } else {
+                            String why = whyOf(text);
+                            show("Qwen started · " + title + (why.isEmpty() ? "" : " · because " + why));
                             coder.start();
                             final String taskTitle = title;
                             CodingAgent.Result agent = new CodingAgent(coder::complete,
                                 reviewedTools(hands, autonomousTask),
-                                phase -> show(taskTitle + " · " + phase)).onPlan(p -> plan = p.toString()).execute(text);
+                                phase -> show(taskTitle + " · " + phase)).onPlan(p -> plan = withWhy(p, taskTitle, why)).execute(text);
                             outcome = agent.status;
                             result = agent.output;
                         }
@@ -217,6 +244,41 @@ public final class AgentService extends Service {
         computerWorker.start();
     }
 
+    private static String whyOf(String text) {
+        for (String line : text.split("\n")) if (line.startsWith("Why: ")) return line.substring(5).trim();
+        return "";
+    }
+
+    private static String withWhy(JSONObject p, String task, String why) {
+        try { return p.put("task", task).put("why", why).toString(); } catch (Exception e) { return p.toString(); }
+    }
+
+    /** Qwen reads the exchange and decides whether there is real work to start on its own, and says why. */
+    private String proactiveHandoff(TaskQueue queue, String said, String kleinReply) {
+        if (!LocalCoder.weightsReady) return "";
+        try {
+            coder.start();
+            show("Qwen is checking whether there’s work to do…");
+            JSONArray messages = new JSONArray()
+                .put(new JSONObject().put("role", "system").put("content",
+                    "You watch a chat between the user and Klein. Decide if the user asked for concrete work on files, code, the workspace or the phone. "
+                    + "Small talk, questions and opinions are NOT work. Return ONE JSON object: "
+                    + "{\"work\":false} or {\"work\":true,\"task\":\"a precise task instruction\",\"why\":\"one short sentence quoting what the user asked\"}."))
+                .put(new JSONObject().put("role", "user").put("content",
+                    "User said: " + HandsTools.excerpt(said, 2000) + "\nKlein replied: " + HandsTools.excerpt(kleinReply, 1200)));
+            JSONObject d = CodingAgent.parseAction(coder.complete(messages));
+            if (d == null || !d.optBoolean("work", false)) return "";
+            String task = d.optString("task").trim(), why = d.optString("why").trim();
+            if (task.isEmpty()) return "";
+            if (why.isEmpty()) why = "you asked: " + HandsTools.excerpt(said, 120);
+            queue.enqueue("agent", task + "\nWhy: " + why + "\nOriginal message: " + HandsTools.excerpt(said, 1500));
+            return "⚙ Qwen is starting on this: " + HandsTools.excerpt(task, 200) + "\nWhy: " + why
+                + "\nWatch the plan and progress bar; I’ll ask before changing anything.";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     private CodingAgent.Tools reviewedTools(HandsTools hands) { return reviewedTools(hands, false); }
 
     private CodingAgent.Tools reviewedTools(HandsTools hands, boolean unattended) {
@@ -231,7 +293,7 @@ public final class AgentService extends Service {
                     if (!getSharedPreferences("agent", 0).getBoolean("autonomy", false))
                         throw new InterruptedException("Autonomy was stopped");
                     AutonomyPolicy.requireAllowedTool(name, args, linux.workspace);
-                    return hands.call(name, args);
+                    return track(name, args, hands.call(name, args));
                 }
                 boolean readOnly = java.util.Arrays.asList("read", "list", "observe", "tasker_status").contains(name);
                 if (!readOnly) {
@@ -239,9 +301,15 @@ public final class AgentService extends Service {
                     ActionReview.await(new JSONObject().put("tool", name).put("args", args).toString());
                 }
                 if (stopping) throw new InterruptedException();
-                return hands.call(name, args);
+                return track(name, args, hands.call(name, args));
             }
         };
+    }
+
+    private static JSONObject track(String name, JSONObject args, JSONObject result) {
+        if ("write".equals(name) && result.optBoolean("ok") && args != null && !args.optString("path").isEmpty())
+            lastOutput = args.optString("path");
+        return result;
     }
 
     private boolean scheduleAutonomousGoal(TaskQueue queue) throws Exception {
