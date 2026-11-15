@@ -83,7 +83,20 @@ final class LinuxWorkspace implements AutoCloseable {
         return shellProcess(command, false).redirectErrorStream(true).redirectOutput(log).start();
     }
 
+    /**
+     * Starts an interactive process on a real pseudo-terminal: /dev/ptmx and /dev/pts are bound into Alpine so
+     * Python's pty module (assets/terminal/pty_bridge.py) can give the shell a proper tty. Caller owns the process.
+     */
+    Process interactive(String command, String... extraEnv) throws Exception {
+        ProcessBuilder builder = shellProcess(command, true, extraEnv);
+        return builder.redirectErrorStream(true).start();
+    }
+
     private ProcessBuilder shellProcess(String command, boolean manual) throws Exception {
+        return shellProcess(command, manual, (String[]) null);
+    }
+
+    private ProcessBuilder shellProcess(String command, boolean manual, String[] extraEnv) throws Exception {
         prepare();
         String nativeDir = context.getApplicationInfo().nativeLibraryDir;
         java.util.List<String> args = new java.util.ArrayList<>(java.util.Arrays.asList(
@@ -91,8 +104,13 @@ final class LinuxWorkspace implements AutoCloseable {
             "-b", workspace + ":/workspace", "-b", "/dev/null:/dev/null",
             "-b", "/dev/urandom:/dev/urandom", "-b", "/dev/random:/dev/random"));
         if (manual) { args.add("-b"); args.add(inbox + ":/inbox"); }
+        if (extraEnv != null) {
+            args.addAll(java.util.Arrays.asList("-b", "/dev/ptmx:/dev/ptmx", "-b", "/dev/pts:/dev/pts", "-b", "/proc:/proc"));
+        }
         args.addAll(java.util.Arrays.asList("/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-            "HOME=/root", "TMPDIR=/tmp", "LANG=C.UTF-8", "/bin/sh", "-c", command));
+            "HOME=/root", "TMPDIR=/tmp", "LANG=C.UTF-8"));
+        if (extraEnv != null) args.addAll(java.util.Arrays.asList(extraEnv));
+        args.addAll(java.util.Arrays.asList("/bin/sh", "-c", command));
         ProcessBuilder process = new ProcessBuilder(args);
         Map<String, String> env = process.environment();
         env.put("PROOT_LOADER", nativeDir + "/libproot_loader.so");
