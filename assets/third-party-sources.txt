@@ -1,0 +1,31 @@
+The Last Fuck 0.1.0 — bundled and optional upstream components
+
+llama.cpp b6248 (32732f2459a598606055f0403f0e4ec148d06d68), MIT.
+Source: https://github.com/ggml-org/llama.cpp/tree/32732f2459a598606055f0403f0e4ec148d06d68
+Built with Android NDK r27d, arm64-v8a, API 26, static llama libraries,
+GGML_NATIVE=OFF, GGML_OPENMP=OFF, GGML_BACKEND_DL=OFF, GGML_CPU_ARM_ARCH=armv8-a,
+LLAMA_CURL=OFF, and ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON.
+
+PRoot 5.1.107.102, talloc 2.5.0 and libandroid-shmem are Android builds
+distributed by the Termux project. Their build recipes and patches are at:
+https://github.com/termux/termux-packages/tree/master/packages/proot
+https://github.com/termux/termux-packages/tree/master/packages/libtalloc
+https://github.com/termux/termux-packages/tree/master/packages/libandroid-shmem
+PRoot upstream: https://github.com/termux/proot
+talloc upstream: https://talloc.samba.org/
+libandroid-shmem upstream: https://github.com/termux/libandroid-shmem
+
+Alpine Linux 3.22 ARM64 packages are enumerated with versions, licenses and
+source commits in alpine-package-manifest.txt. Package source recipes:
+https://gitlab.alpinelinux.org/alpine/aports/-/tree/3.22-stable
+BusyBox supplies the shell and baseline utilities:
+https://gitlab.alpinelinux.org/alpine/aports/-/tree/3.22-stable/main/busybox
+
+Qwen2.5-Coder-1.5B-Instruct-GGUF is fetched on first start. Apache-2.0.
+https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF
+SHA-256: cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046
+
+SynthiaAccessibilityService.java comes from the user-supplied
+Synthia-Hands-v0.3.0-with-r22-runtime-2.zip, SHA-256:
+14025d857505ad56d831096e0a857f8a037455850c6330d85c97f936ff99ed00.
+Local changes recycle the observed root and redact password nodes.

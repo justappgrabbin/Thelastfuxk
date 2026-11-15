@@ -1,0 +1,11 @@
+Task dispatch repair verification — 2026-11-12
+
+The supplied patch changes TaskQueue.load() to recognize ".running-job" as a structured JSON job. The uploaded ZIP already contains exactly that corrected code; reapplying the patch would fail because its old line is absent.
+
+Verified by source inspection:
+- .job and .manual.job are claimed and renamed to .running-job.
+- .running-job is decoded as JSON with kind/text fields.
+- .task is renamed to .running-task and treated as plain agent text.
+- Existing assets and source files are preserved.
+
+Limitations: Android SDK and org.json test runtime were not present in this environment, so no APK was compiled or installed, and device-level behavior was not tested. No model weights are inferred from the presence of native runtime libraries.
