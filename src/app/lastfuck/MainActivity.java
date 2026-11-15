@@ -65,6 +65,14 @@ public final class MainActivity extends Activity {
             @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return true; }
             @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
                 String scheme=request.getUrl().getScheme();
+                String path=request.getUrl().getPath();
+                // The app's own bundled libraries (xterm.js for the real terminal) are served from assets/vendor.
+                if ("cynthia.local".equals(request.getUrl().getHost()) && path!=null && path.startsWith("/vendor/") && !path.contains("..")) {
+                    try {
+                        String mime=path.endsWith(".js")?"text/javascript":path.endsWith(".css")?"text/css":"text/plain";
+                        return new android.webkit.WebResourceResponse(mime,"UTF-8",getAssets().open(path.substring(1)));
+                    } catch(java.io.IOException e) { /* fall through to the block below */ }
+                }
                 if ("https".equals(scheme)||"http".equals(scheme)||"file".equals(scheme)||"content".equals(scheme))
                     return new android.webkit.WebResourceResponse("text/plain","UTF-8",new java.io.ByteArrayInputStream(new byte[0]));
                 return null;
@@ -77,6 +85,9 @@ public final class MainActivity extends Activity {
         } catch(Exception e) { showClassic(state); }
         startAgent();
     }
+
+    private static volatile boolean termStarting;
+    private static volatile String termStatus="closed";
 
     public final class DesktopBridge {
         private String error(Exception e) { try { return new org.json.JSONObject().put("error",String.valueOf(e.getMessage())).toString(); } catch(Exception ignored) { return "{}"; } }
@@ -123,6 +134,38 @@ public final class MainActivity extends Activity {
                 return new org.json.JSONObject().put("id",id).toString();
             } catch(Exception e) { return error(e); }
         }
+        // ---- Real terminal: one live login shell on a pseudo-terminal in Alpine (TerminalSession) ----
+        @android.webkit.JavascriptInterface public String termOpen(int cols, int rows) {
+            TerminalSession s=TerminalSession.get();
+            if (s!=null && s.isAlive()) { try { s.resize(cols,rows); } catch(Exception ignored) {} return "{\"status\":\"open\"}"; }
+            if (termStarting) return "{\"status\":\"starting\"}";
+            termStarting=true; termStatus="Starting Linux shell…";
+            new Thread(()->{
+                try { TerminalSession.open(MainActivity.this, queue.inbox, cols, rows); termStatus="open"; }
+                catch(Exception e) { termStatus="Terminal could not start · "+e.getMessage(); }
+                finally { termStarting=false; }
+            },"terminal-start").start();
+            return "{\"status\":\"starting\"}";
+        }
+        /** Returns {status, offset, data(base64)} with everything after {@code from}. */
+        @android.webkit.JavascriptInterface public String termRead(double from) {
+            try {
+                TerminalSession s=TerminalSession.get();
+                org.json.JSONObject out=new org.json.JSONObject().put("status", s!=null&&s.isAlive()?"open":termStatus);
+                if (s==null) return out.put("offset",(long)from).put("data","").toString();
+                byte[] data=s.readSince((long)from);
+                return out.put("offset",s.offset()).put("data",android.util.Base64.encodeToString(data,android.util.Base64.NO_WRAP)).toString();
+            } catch(Exception e) { return error(e); }
+        }
+        @android.webkit.JavascriptInterface public void termWrite(String text) {
+            try { TerminalSession s=TerminalSession.get(); if(s!=null) s.write(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)); }
+            catch(Exception ignored) {}
+        }
+        @android.webkit.JavascriptInterface public void termResize(int cols, int rows) {
+            try { TerminalSession s=TerminalSession.get(); if(s!=null) s.resize(cols,rows); } catch(Exception ignored) {}
+        }
+        @android.webkit.JavascriptInterface public void termClose() { TerminalSession.close(); termStatus="closed"; }
+
         @android.webkit.JavascriptInterface public void autonomy(boolean enabled) {
             if (enabled && settings.getString("autonomy_goal", "").trim().isEmpty()) {
                 settings.edit().putBoolean("autonomy", false)
