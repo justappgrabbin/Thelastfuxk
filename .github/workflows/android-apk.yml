@@ -25,6 +25,16 @@ jobs:
           packages: 'platform-tools'
       - name: Install Android SDK
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Bundle Klein's chat code into the APK (so Klein runs with no download)
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/justappgrabbin/klein-agent "$RUNNER_TEMP/klein-agent"
+          cd "$RUNNER_TEMP/klein-agent"
+          git sparse-checkout set --no-cone '/*.py' '/klein_tools_fixed/' '/run/tokenizer.json' '/skills/catalog.json' '/skills/**/*.md' '/web/'
+          test -f web_app.py && test -f run/tokenizer.json
+          git rev-parse HEAD > KLEIN_AGENT_COMMIT
+          tar --exclude=.git -czf "$GITHUB_WORKSPACE/assets/klein/klein-agent.tar.gz" .
+          ls -la "$GITHUB_WORKSPACE/assets/klein/klein-agent.tar.gz"
       - name: Compile and test
         run: |
           export ANDROID_PLATFORM_JAR="$ANDROID_HOME/platforms/android-35/android.jar"

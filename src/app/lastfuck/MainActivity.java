@@ -266,7 +266,7 @@ public final class MainActivity extends Activity {
                     case "export": pickFile(true); break;
                     case "classic": showClassic(null); break;
                     case "start": startAgent(); break;
-                    case "weights": startAgent(); break;
+                    case "weights": startForegroundService(new Intent(MainActivity.this, AgentService.class).setAction(AgentService.DOWNLOAD_WEIGHTS)); break;
                     case "klein": startAgent(); break;
                     case "stop": stopService(new Intent(MainActivity.this,AgentService.class)); break;
                     case "console": console(); break;

@@ -39,6 +39,15 @@ final class KleinRuntime implements AutoCloseable {
         copyAssets("klein/phone", phoneDir);
         status = "Klein: checking klein-agent code in Linux…";
         LinuxWorkspace.Result have = linux.shell("test -f /root/klein-agent/web_app.py && test -f /root/klein-agent/run/tokenizer.json && echo yes", 60);
+        if (!have.output.contains("yes") && hasAsset("klein/klein-agent.tar.gz")) {
+            status = "Klein: unpacking her code from the app (no download needed)…";
+            File bundle = new File(linux.workspace, ".klein-agent.tar.gz");
+            copyAssets("klein/klein-agent.tar.gz", bundle);
+            LinuxWorkspace.Result unpack = linux.shell("set -e; rm -rf /root/klein-agent.partial; mkdir -p /root/klein-agent.partial; "
+                + "tar -xzf /workspace/.klein-agent.tar.gz -C /root/klein-agent.partial; rm -rf /root/klein-agent; "
+                + "mv /root/klein-agent.partial /root/klein-agent; rm -f /workspace/.klein-agent.tar.gz; echo unpacked", 600);
+            if (unpack.code == 0 && unpack.output.contains("unpacked")) have = new LinuxWorkspace.Result(0, "yes");
+        }
         if (!have.output.contains("yes")) {
             status = "Klein: downloading klein-agent (first start only, about 40 MB)…";
             // Partial, sparse clone: only the Python code, tokenizer, web files and skill notes Klein's chat reads.
@@ -63,6 +72,10 @@ final class KleinRuntime implements AutoCloseable {
         String text = log.isFile() ? RuntimeFiles.read(new FileInputStream(log), 65536) : "";
         if (python.isAlive()) python.destroyForcibly();
         throw new IOException("Klein server didn't start: " + text.substring(Math.max(0, text.length() - 1200)).trim());
+    }
+
+    private boolean hasAsset(String path) {
+        try (InputStream in = context.getAssets().open(path)) { return true; } catch (IOException e) { return false; }
     }
 
     boolean isRunning() { return python != null && python.isAlive(); }

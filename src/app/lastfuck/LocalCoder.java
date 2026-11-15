@@ -31,9 +31,19 @@ final class LocalCoder implements AutoCloseable {
     static volatile String weightsStatus = "Qwen weights not checked yet";
     static volatile int weightsPercent = 0;
     static volatile boolean weightsReady = false;
+    /** Set while the user-requested download runs, so a task that arrives meanwhile waits for it instead of failing. */
+    static volatile boolean weightsDownloading = false;
 
     /** Downloads and verifies the weights if missing. Safe to call at startup and again from start(). */
-    synchronized File ensureModel() throws Exception { return model(); }
+    synchronized File ensureModel() throws Exception {
+        weightsDownloading = true;
+        try { return model(); } finally { weightsDownloading = false; }
+    }
+
+    /** True when the full Qwen file is already on the phone (no network needed). */
+    static boolean hasWeights(Context context) {
+        return new File(context.getFilesDir(), "qwen-coder.gguf").length() == SIZE;
+    }
 
     private synchronized File model() throws Exception {
         File model = new File(context.getFilesDir(), "qwen-coder.gguf");
@@ -168,6 +178,8 @@ final class LocalCoder implements AutoCloseable {
 
     void start() throws Exception {
         if (server != null && server.isAlive()) return;
+        if (!hasWeights(context) && !weightsDownloading)
+            throw new IOException("Qwen weights aren't downloaded yet · tap Download weights to get them (about 1.1 GB)");
         File weights = model();
         if (stopped) throw new InterruptedIOException();
         try (ServerSocket reservation = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {

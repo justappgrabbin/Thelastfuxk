@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class AgentService extends Service {
     static final String STOP = "app.lastfuck.STOP";
+    /** Sent only by the Download weights button: Qwen weights never download on their own unless the setting allows it. */
+    static final String DOWNLOAD_WEIGHTS = "app.lastfuck.DOWNLOAD_WEIGHTS";
     private static final String ACTIVE = "agent_active";
     private static final String EVENTS = "agent_events";
     static volatile String status = "Stopped";
@@ -54,7 +56,9 @@ public final class AgentService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (worker != null) { startComputer(); startWeightsDownload(); startKlein(); return START_STICKY; }
+        boolean wantWeights = intent != null && DOWNLOAD_WEIGHTS.equals(intent.getAction());
+        if (wantWeights) getSharedPreferences("agent", 0).edit().putBoolean("qwen_download_requested", true).apply();
+        if (worker != null) { startComputer(); if (wantWeights) startWeightsDownload(); startKlein(); return START_STICKY; }
         running = true;
         status = "Starting";
         startForeground(1, notification(ACTIVE, "The Last Fuck", status, true));
@@ -82,8 +86,12 @@ public final class AgentService extends Service {
             manualWorker.start();
             HandsTools hands = new HandsTools(this, linux);
             startComputer();
-            startWeightsDownload();
-            startKlein();
+            startKlein(); // Klein first: it is bundled and does not wait on Qwen
+            android.content.SharedPreferences start = getSharedPreferences("agent", 0);
+            // Qwen only downloads after the user pressed Download weights (or turned on qwen_auto_download).
+            // If the file is already complete this just marks it ready.
+            if (LocalCoder.hasWeights(this) || start.getBoolean("qwen_download_requested", false)
+                || start.getBoolean("qwen_auto_download", false)) startWeightsDownload();
             show("Watcher active · waiting for work");
             while (!stopping && !Thread.currentThread().isInterrupted()) {
                 if (computerStatus.startsWith("Linux computer running") && !linux.isResidentAlive()) {
@@ -147,6 +155,10 @@ public final class AgentService extends Service {
                             if (java.util.Arrays.asList("hi", "hello", "hey", "hello cynthia", "hi cynthia").contains(normalized)) {
                                 result = note + "Hey, I’m here. What are we making today? You can chat with me, ask me to work, or open my computer below.";
                                 outcome = "Interface greeting";
+                            } else if (!LocalCoder.hasWeights(this)) {
+                                result = note + "Klein isn't ready yet (" + KleinRuntime.status + ") and Qwen's weights aren't downloaded, "
+                                    + "so nobody can answer this one yet. Klein starts by herself and needs no download; tap Download weights only if you want Qwen too.";
+                                outcome = "Waiting for Klein";
                             } else {
                                 coder.start();
                                 show("Cynthia is thinking…");
